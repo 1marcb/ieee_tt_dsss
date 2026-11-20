@@ -1,17 +1,17 @@
 # Tiny Tapeout project information
 project:
-  title:        ""      # Project title
-  author:       ""      # Your name
-  discord:      ""      # Your discord username, for communication and automatically assigning you a Tapeout role (optional)
-  description:  ""      # One line description of what your project does
-  language:     "Verilog" # other examples include SystemVerilog, Amaranth, VHDL, etc
-  clock_hz:     0       # Clock frequency in Hz (or 0 if not applicable)
+  title:        "JAMGUARD DSSS Anti-Jam Link"
+  author:       "Marc Boudames"
+  discord:      ""
+  description:  "Gold-code spread-spectrum transmitter and correlating receiver with a built-in jammer, giving 14.9 dB of processing gain in one tile"
+  language:     "Verilog"
+  clock_hz:     10000000
 
   # How many tiles your design occupies? A single tile is about 167x108 uM.
   tiles: "1x1"          # Valid values: 1x1, 1x2, 2x2, 3x2, 4x2, 6x2 or 8x2
 
   # Your top module name must start with "tt_um_". Make it unique by including your github username:
-  top_module:  "tt_um_example"
+  top_module:  "tt_um_1marcb_jamguard"
 
   # List your project's source files here.
   # Source files must be in ./src and you must list each source file separately, one per line.
@@ -23,34 +23,34 @@ project:
 # This section is for the datasheet/website. Use descriptive names (e.g., RX, TX, MOSI, SCL, SEG_A, etc.).
 pinout:
   # Inputs
-  ui[0]: ""
-  ui[1]: ""
-  ui[2]: ""
-  ui[3]: ""
-  ui[4]: ""
-  ui[5]: ""
-  ui[6]: ""
-  ui[7]: ""
+  ui[0]: "TX_DATA0 / cfg CODE_ID0"
+  ui[1]: "TX_DATA1 / cfg CODE_ID1"
+  ui[2]: "TX_DATA2 / cfg CODE_ID2"
+  ui[3]: "TX_DATA3 / cfg CODE_ID3"
+  ui[4]: "TX_DATA4 / cfg CODE_ID4"
+  ui[5]: "TX_DATA5 / cfg JAM_LVL0"
+  ui[6]: "TX_DATA6 / cfg JAM_LVL1"
+  ui[7]: "TX_DATA7 / cfg ACQ_EN"
 
   # Outputs
-  uo[0]: ""
-  uo[1]: ""
-  uo[2]: ""
-  uo[3]: ""
-  uo[4]: ""
-  uo[5]: ""
-  uo[6]: ""
-  uo[7]: ""
+  uo[0]: "RX_DATA0 / status CORR0"
+  uo[1]: "RX_DATA1 / status CORR1"
+  uo[2]: "RX_DATA2 / status CORR2"
+  uo[3]: "RX_DATA3 / status CORR3"
+  uo[4]: "RX_DATA4 / status CORR4"
+  uo[5]: "RX_DATA5 / status HUNTING"
+  uo[6]: "RX_DATA6 / status LOCKED"
+  uo[7]: "RX_DATA7 / status VALID"
 
   # Bidirectional pins
-  uio[0]: ""
-  uio[1]: ""
-  uio[2]: ""
-  uio[3]: ""
-  uio[4]: ""
-  uio[5]: ""
-  uio[6]: ""
-  uio[7]: ""
+  uio[0]: "TX_START (in) / cfg RX_CODE0"
+  uio[1]: "RX_CHIP (in) / cfg RX_CODE1"
+  uio[2]: "RX_EPOCH (in) / cfg RX_CODE2"
+  uio[3]: "LOOPBACK_EN (in) / cfg RX_CODE3"
+  uio[4]: "JAM_EN (in) / cfg RX_CODE4"
+  uio[5]: "DISP_SEL (in)"
+  uio[6]: "TX_CHIP (out)"
+  uio[7]: "TX_EPOCH (out)"
 
 # Do not change!
 yaml_version: 6

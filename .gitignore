@@ -11,3 +11,16 @@ test/sim_build
 test/__pycache__/
 test/results.xml
 test/gate_level_netlist.v
+
+# local toolchain / scratch (not used by CI)
+.venv/
+textbook/*.aux
+textbook/*.log
+textbook/*.out
+textbook/*.toc
+textbook/*.idx
+textbook/*.ilg
+textbook/*.ind
+textbook/*.fls
+textbook/*.fdb_latexmk
+textbook/*.synctex.gz

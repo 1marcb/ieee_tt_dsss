@@ -1,42 +1,138 @@
-![](../../workflows/gds/badge.svg) ![](../../workflows/docs/badge.svg) ![](../../workflows/test/badge.svg) ![](../../workflows/fpga/badge.svg)
+# JAMGUARD — a DSSS anti-jam link core for Tiny Tapeout SKY 26e
 
-# Tiny Tapeout Verilog Project Template
+A complete direct-sequence spread-spectrum modem on a single 1×1 Tiny Tapeout
+tile: a Gold-code spreader, a correlating despreader, and a built-in jammer so
+the anti-jam margin can be measured on the bench with no extra equipment.
 
-- [Read the documentation for project](docs/info.md)
+| | |
+|---|---|
+| Shuttle | Tiny Tapeout **SKY 26e** (sky130A), closes 2026-11-30 |
+| Area | **1×1 tile** — 161.00 × 111.52 µm |
+| Size | **109 flip-flops, 473 generic cells** (Yosys, technology independent) |
+| Top module | `tt_um_1marcb_jamguard` |
+| Clock | 10 MHz declared; hardened against a 20 ns period (50 MHz) for margin |
+| Code | length-31 Gold code, preferred pair `[5,2]` / `[5,4,3,2]` |
+| Processing gain | 10·log₁₀(31) = **14.9 dB** |
+| Jam tolerance | decodes through **15 of 31 corrupted chips (48%)** |
+| Foreign-code rejection | cross-correlation bounded at 9/31; lock needs 19/31 |
 
-## What is Tiny Tapeout?
+See [docs/info.md](docs/info.md) for the datasheet and the bench demos, and
+[textbook/](textbook/) for the full derivation of the mathematics and the
+mapping from equations to RTL.
 
-Tiny Tapeout is an educational project that aims to make it easier and cheaper than ever to get your digital and analog designs manufactured on a real chip.
+## Repository layout
 
-To learn more and get started, visit https://tinytapeout.com.
+```
+src/project.v              the whole design, one file
+src/config.json            LibreLane settings (template defaults, unmodified)
+info.yaml                  Tiny Tapeout project metadata and pinout
+docs/info.md               datasheet, generated into the TT project page
+test/jamguard_model.py     independent software model + coding-theory proofs
+test/test.py               cocotb suite, runs on RTL and on the netlist
+test/tb.v, test/Makefile   the template harness CI uses
+test/run_local.py          run the suite without GNU make (Windows)
+tools/harden_local.py      run the LibreLane hardening locally, in Docker
+tools/synth_stat.ys        quick Yosys cell/flip-flop count
+textbook/                  standalone LaTeX text on the theory and the design
+```
 
-## Set up your Verilog project
+## Verifying the design
 
-1. Add your Verilog files to the `src` folder.
-2. Edit the [info.yaml](info.yaml) and update information about your project, paying special attention to the `source_files` and `top_module` properties. If you are upgrading an existing Tiny Tapeout project, check out our [online info.yaml migration tool](https://tinytapeout.github.io/tt-yaml-upgrade-tool/).
-3. Edit [docs/info.md](docs/info.md) and add a description of your project.
-4. Adapt the testbench to your design. See [test/README.md](test/README.md) for more information.
+The claims this chip makes are coding-theory claims, so they are checked
+independently of the hardware:
 
-The GitHub action will automatically build the ASIC files using [LibreLane](https://www.zerotoasiccourse.com/terminology/librelane/).
+```bash
+python test/jamguard_model.py
+```
 
-## Enable GitHub actions to build the results page
+This proves, from scratch, that both polynomials are primitive, that the pair
+is *preferred* (correlations confined to `{-9,-1,+7}`, meeting the bound
+`t(n) = 1 + 2^((n+1)/2) = 9`), that the 31 seeds give 31 distinct codes, that a
+31-chip majority vote survives exactly 15 errors, and that the lock threshold
+clears the worst **misaligned** correlation a free-running receiver can see.
 
-- [Enabling GitHub Pages](https://tinytapeout.com/faq/#my-github-action-is-failing-on-the-pages-part)
+Then the hardware is compared against that model, never against hand-written
+expected values:
 
-## Resources
+```bash
+cd test && make -B                 # what CI runs
+python test/run_local.py           # same thing, no make needed (Windows)
+python test/run_local.py --gl      # against the hardened netlist
+```
 
-- [FAQ](https://tinytapeout.com/faq/)
-- [Digital design lessons](https://tinytapeout.com/digital_design/)
-- [Learn how semiconductors work](https://tinytapeout.com/siliwiz/)
-- [Join the community](https://tinytapeout.com/discord)
-- [Build your design locally](https://www.tinytapeout.com/guides/local-hardening/)
+Eight tests: reset state, the 248-chip transmit frame chip-for-chip, a
+256-byte loopback sweep, the exact jam cliff at J=15/16, foreign-code rejection
+both aligned and free-running, serial-search acquisition from a wrong phase,
+and the four-tier jammer ladder.
 
-## What next?
+## Local hardening
 
-- [Submit your design to the next shuttle](https://app.tinytapeout.com/).
-- Edit [this README](README.md) and explain your design, how it works, and how to test it.
-- Share your project on your social network of choice:
-  - LinkedIn [#tinytapeout](https://www.linkedin.com/search/results/content/?keywords=%23tinytapeout) [@TinyTapeout](https://www.linkedin.com/company/100708654/)
-  - Mastodon [#tinytapeout](https://chaos.social/tags/tinytapeout) [@matthewvenn](https://chaos.social/@matthewvenn)
-  - X (formerly Twitter) [#tinytapeout](https://twitter.com/hashtag/tinytapeout) [@tinytapeout](https://twitter.com/tinytapeout)
-  - Bluesky [@tinytapeout.com](https://bsky.app/profile/tinytapeout.com)
+```bash
+python tools/harden_local.py
+```
+
+Reproduces the CI hardening on this machine using the same LibreLane version
+and PDK revision, and prints utilization, timing slack and cell counts. It
+needs Docker running. Run outputs are kept in `%LOCALAPPDATA%\tt-jamguard`
+deliberately — LibreLane writes tens of thousands of files and this repository
+lives in a synced folder.
+
+## Local setup from scratch
+
+```bash
+python -m venv .venv
+.venv/Scripts/python -m pip install -r test/requirements.txt pyyaml yowasp-yosys
+winget install --id Icarus.Verilog          # the simulator
+# Docker Desktop, for tools/harden_local.py
+```
+
+## Verification status
+
+| check | result |
+|---|---|
+| Software model self-check (coding theory proved from scratch) | **pass** |
+| cocotb RTL simulation | **8/8** |
+| Verilator `--lint-only -Wall` | **0 warnings** |
+| **cocotb gate-level simulation** (post-PnR netlist + sky130 cells) | **8/8** |
+| LibreLane hardening | **pass**, 42.0% utilisation |
+| Static timing, all 9 corners | setup **+10.27 ns**, hold **+0.104 ns** |
+| Routing DRC / Magic DRC / antenna | **0 / 0 / 0** |
+| GDS + precheck + gl\_test in CI | pending first push |
+| FPGA prototype | pending |
+
+RTL and gate-level run the *same* eight tests with the *same* coverage —
+all 256 bytes, every jam level, both foreign-code cases. Gate level takes
+about 15 seconds.
+
+### Post-layout results
+
+| metric | value |
+|---|---|
+| sequential cells | 109 (identical to the synthesis count) |
+| standard cells | 797, of which 313 combinational |
+| fill / tap cells | 2736 / 225 (inert, filling the unused 58%) |
+| utilisation | 42.0% |
+| worst setup slack | +10.27 ns at a 20 ns period (slow corner) |
+| worst hold slack | +0.104 ns (fast corner) |
+| wirelength | 11 078 µm |
+| total power | 0.56 mW |
+
+Two benign warnings, deliberately not "fixed": one max-fanout violation on
+`clkbuf_0_clk` (the clock-tree root buffer, created by CTS, not by the RTL),
+and ten max-slew violations of −0.008 ns against a 0.75 ns limit in the
+slowest corner. Both come from the reset net, which drives 86 of the 109
+flip-flops and is the critical path. With +10.27 ns of slack at 20 ns — and
+90 ns at the declared 10 MHz — reducing reset fanout would mean deleting
+resets, which would trade away the X-free gate-level simulation those resets
+buy. That is the wrong trade.
+
+## Remaining work
+
+- [ ] Push and confirm `test`, `gds`, `precheck`, `gl_test` green in CI
+- [ ] FPGA prototype (the template's `fpga` workflow, or an iCE40 board)
+- [ ] Submit in the Tiny Tapeout app, apply the IEEE CS coupon, resubmit final commit
+- [ ] Optional: SymbiYosys formal properties
+
+## Licence
+
+Apache-2.0, see [LICENSE](LICENSE).
