@@ -33,6 +33,7 @@ test/tb.v, test/Makefile   the template harness CI uses
 test/run_local.py          run the suite without GNU make (Windows)
 tools/harden_local.py      run the LibreLane hardening locally, in Docker
 tools/synth_stat.ys        quick Yosys cell/flip-flop count
+tools/fpga_local.py        iCE40UP5K build via Yosys + nextpnr (WASM, no install)
 textbook/                  standalone LaTeX text on the theory and the design
 ```
 
@@ -68,7 +69,8 @@ and the four-tier jammer ladder.
 ## Local hardening
 
 ```bash
-python tools/harden_local.py
+python tools/harden_local.py     # ASIC: LibreLane, area and timing
+python tools/fpga_local.py       # FPGA: iCE40UP5K synthesis and timing
 ```
 
 Reproduces the CI hardening on this machine using the same LibreLane version
@@ -98,7 +100,8 @@ winget install --id Icarus.Verilog          # the simulator
 | Static timing, all 9 corners | setup **+10.27 ns**, hold **+0.104 ns** |
 | Routing DRC / Magic DRC / antenna | **0 / 0 / 0** |
 | GDS + precheck + gl\_test in CI | pending first push |
-| FPGA prototype | pending |
+| iCE40UP5K build (Yosys + nextpnr) | **pass**, 199/5280 LCs, 34.9 MHz |
+| FPGA on real hardware | pending a board |
 
 RTL and gate-level run the *same* eight tests with the *same* coverage —
 all 256 bytes, every jam level, both foreign-code cases. Gate level takes
@@ -129,7 +132,9 @@ buy. That is the wrong trade.
 ## Remaining work
 
 - [ ] Push and confirm `test`, `gds`, `precheck`, `gl_test` green in CI
-- [ ] FPGA prototype (the template's `fpga` workflow, or an iCE40 board)
+- [ ] Load the bitstream on an iCE40 board and run the loopback + jammer demo
+      (`tools/fpga_local.py` already builds it; this is the step that
+      exercises genuinely asynchronous inputs)
 - [ ] Submit in the Tiny Tapeout app, apply the IEEE CS coupon, resubmit final commit
 - [ ] Optional: SymbiYosys formal properties
 

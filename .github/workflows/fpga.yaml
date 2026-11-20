@@ -1,9 +1,10 @@
 name: fpga
 
 on:
+  # Enabled on every push: an iCE40 build is a second, independent synthesis
+  # of the same RTL, and the bitstream is what exercises genuinely
+  # asynchronous inputs on real hardware.
   push:
-    # Comment out (or remove) the following line to run the FPGA workflow on every push:
-    branches: none
   workflow_dispatch:
 
 jobs:

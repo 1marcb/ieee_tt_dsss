@@ -24,3 +24,4 @@ textbook/*.ind
 textbook/*.fls
 textbook/*.fdb_latexmk
 textbook/*.synctex.gz
+build/
