@@ -30,7 +30,12 @@
  *   uio_in[4:0]  rx_code_id   receiver code_id, 0 means "same as TX".  Set
  *                             different from tx_code_id to watch the receiver
  *                             reject a foreign transmitter.
- *   uio_in[5]    reserved, tie low
+ *   uio_in[5]    tx_pins_off  1 = tri-state uio[7:6] so this part drives
+ *                             nothing at all on the uio bus. A receiving
+ *                             board set this way cannot contend with a
+ *                             transmitting board no matter how the two are
+ *                             wired together. 0 = normal, drive the chip
+ *                             stream and epoch strobe outward.
  *
  * RUN MODE
  *   ui_in [7:0]  tx_data      byte to transmit, sampled when a frame starts
@@ -410,12 +415,24 @@ module tt_um_1marcb_jamguard (
   wire [7:0] status = {rx_valid, locked, acq_en & ~locked, m_last};
 
   assign uo_out  = disp_sel ? status : rx_data;
+  // uio[7:6] carry the chip stream and the epoch strobe outward, and uio[5:0]
+  // are always inputs. The two output drivers can be turned off entirely by
+  // setting tx_pins_off at reset, which leaves this part electrically inert
+  // on the whole uio bus.
+  //
+  // That exists for one reason. Two boards running this design both drive
+  // uio[7:6], so wiring them together carelessly puts one output driver
+  // against another, and the only thing limiting the current is the on
+  // resistance of the two drivers. Configuring the receiving board with
+  // tx_pins_off removes that failure mode at the source rather than relying
+  // on whoever is holding the jumper wires.
+  wire tx_pins_en = ~cfg_b[5];
+
   assign uio_out = {tx_epoch, tx_chip, 6'b0};
-  assign uio_oe  = 8'b1100_0000;   // uio[7:6] drive out, uio[5:0] are inputs
+  assign uio_oe  = {{2{tx_pins_en}}, 6'b0};
 
   // List all unused inputs to prevent warnings.  uio_in[7:6] are the two pins
-  // this design drives as outputs, so their input paths are never read, and
-  // cfg_b[5] is the reserved configuration bit.
-  wire _unused = &{ena, cfg_b[5], uio_in[7:6], 1'b0};
+  // this design drives as outputs, so their input paths are never read.
+  wire _unused = &{ena, uio_in[7:6], 1'b0};
 
 endmodule

@@ -110,7 +110,7 @@ release reset**:
 | `ui_in[6:5]` | `JAM_LVL` | jammer strength 0..3 |
 | `ui_in[7]` | `ACQ_EN` | 1 = self-acquiring, 0 = epoch-slaved |
 | `uio_in[4:0]` | `RX_CODE_ID` | receiver code, **0 means "same as TX"** |
-| `uio_in[5]` | reserved | tie low |
+| `uio_in[5]` | `TX_PINS_OFF` | 1 = tri-state `uio[7:6]`, see below |
 
 After reset the pins take on their run-mode meanings (see the pinout table).
 
@@ -149,11 +149,22 @@ correlator is searching and clears when it locks.
 
 ### Demo 5: two boards
 
-> **Do not join the two PMOD headers with a straight-through cable.** Both
-> chips run the same design, so both drive `uio[6]` and `uio[7]` as outputs
-> (`uio_oe = 8'b1100_0000`). A pin for pin cable shorts A's `uio[6]` output
-> against B's `uio[6]` output, and whenever they disagree one driver pulls to
-> 3.3 V while the other pulls to ground. Use a crossover.
+Both chips run the same design, so by default both drive `uio[6]` and
+`uio[7]` as outputs. Wiring two boards together carelessly can therefore put
+one output driver against another, and the only thing limiting the current is
+the on resistance of the two drivers.
+
+**Set `TX_PINS_OFF` on the receiving board.** Hold `uio_in[5]` high during
+reset and that board tri-states `uio[7:6]` for the whole run, so `uio_oe`
+reads `0x00` and the part drives nothing anywhere on the bus. It can then be
+wired to a transmitting board in any way at all without contention, and it
+still receives normally and still runs loopback internally. This is the
+primary protection, and it works regardless of what the cable does.
+
+Use individual jumper wires rather than a ribbon in any case. On the demo
+board the `uio` pins are exposed on a PMOD header and may also be driven by
+the on-board microcontroller, so joining two boards pin for pin risks more
+than just this chip's two outputs.
 
 Four wires, and nothing else:
 
@@ -164,7 +175,8 @@ Four wires, and nothing else:
 | `clk` | shared | `clk` |
 | `gnd` | shared | `gnd` |
 
-Leave B's `uio[6]` and `uio[7]` unconnected.
+Leave B's `uio[6]` and `uio[7]` unconnected. With `TX_PINS_OFF` set on B
+they are high impedance anyway, which is the belt and braces arrangement.
 
 **The clock must be shared.** The receiver samples one chip per clock and has
 no clock recovery. Two free-running oscillators 100 ppm apart would slip a

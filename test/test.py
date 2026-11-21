@@ -82,11 +82,15 @@ def start_clock(dut):
     cocotb.start_soon(Clock(dut.clk, CLK_NS, unit="ns").start())
 
 
-async def reset(dut, tx_code, jam_level=0, acq=False, rx_code=0):
+async def reset(dut, tx_code, jam_level=0, acq=False, rx_code=0,
+                tx_pins_off=False):
     """Reset the DUT and latch a configuration off the pins.
 
     The configuration flops track ui_in / uio_in[5:0] the whole time rst_n is
     low, so the value present when reset releases is what gets kept.
+
+    tx_pins_off drives uio_in[5] high during reset, which tri-states the two
+    output pins for the life of the run.
     """
     uio = Uio(dut)
     dut.ena.value = 1
@@ -94,7 +98,7 @@ async def reset(dut, tx_code, jam_level=0, acq=False, rx_code=0):
     dut.ui_in.value = (
         ((1 if acq else 0) << 7) | ((jam_level & 3) << 5) | (tx_code & 0x1F)
     )
-    uio.val = rx_code & 0x1F
+    uio.val = (rx_code & 0x1F) | ((1 << 5) if tx_pins_off else 0)
     dut.uio_in.value = uio.val
 
     await ClockCycles(dut.clk, 6)
@@ -563,3 +567,60 @@ async def test_async_control_timing(dut):
     assert st["locked"] == 1 and st["valid"] == 1, st
     dut._log.info("%d bytes survived start pulses at arbitrary sub cycle "
                   "offsets and widths", len(payload))
+
+
+# ---------------------------------------------------------------------------
+# 10. The output drivers can be turned off
+# ---------------------------------------------------------------------------
+
+@cocotb.test()
+async def test_tx_pins_off(dut):
+    """uio_in[5] at reset must tri-state both output pins for the whole run.
+
+    Two boards running this design both drive uio[7:6]. Wiring them together
+    without care therefore puts one output driver against another, with only
+    the drivers' on resistance limiting the current. Configuring the
+    receiving board with tx_pins_off removes that failure mode electrically
+    instead of relying on correct wiring.
+
+    The receiver has to keep working while the drivers are off, because the
+    whole point is a board that listens and never talks, so this also runs a
+    full byte through the external path and checks it arrives.
+    """
+    code_id = 5
+    data = 0xC3
+    start_clock(dut)
+
+    # Default configuration still drives the two output pins.
+    uio = await reset(dut, tx_code=code_id)
+    assert int(dut.uio_oe.value) == 0b1100_0000, (
+        f"default uio_oe should be 0b11000000, got {int(dut.uio_oe.value):#010b}"
+    )
+
+    # With tx_pins_off the part drives nothing anywhere on the uio bus.
+    uio = await reset(dut, tx_code=code_id, tx_pins_off=True)
+    assert int(dut.uio_oe.value) == 0b0000_0000, (
+        f"tx_pins_off should give uio_oe 0, got {int(dut.uio_oe.value):#010b}"
+    )
+
+    # It must hold for the whole run, not just out of reset, because the
+    # pins would otherwise become outputs again at the first transmission.
+    uio.set(loopback=1, jam_en=0, disp_sel=0)
+    await send_byte(dut, uio, data)
+    assert int(dut.uio_oe.value) == 0b0000_0000, (
+        "uio_oe must stay 0 while transmitting"
+    )
+    assert int(dut.uo_out.value) == data, "loopback must still work"
+
+    # And a receive only board must still receive from the external pins.
+    uio = await reset(dut, tx_code=code_id, acq=False, tx_pins_off=True)
+    uio.set(loopback=0, jam_en=0, disp_sel=0)
+    await ClockCycles(dut.clk, 3)
+    await drive_chips(dut, uio, spread_byte(data, code_id))
+    await ClockCycles(dut.clk, 6)
+    got = int(dut.uo_out.value)
+    assert got == data, f"receive only path broken: got {got:#04x}"
+    assert int(dut.uio_oe.value) == 0b0000_0000
+
+    dut._log.info("tx_pins_off tri-states uio[7:6] for the whole run while "
+                  "loopback and the external receive path both still work")

@@ -8,7 +8,7 @@ the anti-jam margin can be measured with no extra equipment.
 |---|---|
 | Shuttle | Tiny Tapeout **SKY 26e** (sky130A), closes 2026-11-30 |
 | Area | **1×1 tile**, 161.00 × 111.52 µm |
-| Size | **109 flip-flops, 473 generic cells** (Yosys, technology independent) |
+| Size | **110 flip-flops, 475 generic cells** (Yosys, technology independent) |
 | Top module | `tt_um_1marcb_jamguard` |
 | Clock | 10 MHz declared, hardened against a 20 ns period (50 MHz) for margin |
 | Code | length-31 Gold code, preferred pair `[5,2]` / `[5,4,3,2]` |
@@ -58,11 +58,11 @@ python test/run_local.py           # same thing, no make needed (Windows)
 python test/run_local.py --gl      # against the hardened netlist
 ```
 
-Nine tests: reset state, the 248-chip transmit frame chip-for-chip, a
+Ten tests: reset state, the 248-chip transmit frame chip-for-chip, a
 256-byte loopback sweep, the exact jam cliff at J=15/16, foreign-code rejection
 both aligned and free-running, serial-search acquisition from a wrong phase,
-the four-tier jammer ladder, and control inputs driven at random sub-cycle
-offsets.
+the four-tier jammer ladder, control inputs driven at random sub-cycle
+offsets, and the output drivers being tri-stated by `TX_PINS_OFF`.
 
 ### Clock domain crossing audit
 
@@ -111,9 +111,9 @@ winget install --id Icarus.Verilog          # the simulator
 | check | result |
 |---|---|
 | Software model self-check (coding theory proved from scratch) | **pass** |
-| cocotb RTL simulation | **9/9** |
+| cocotb RTL simulation | **10/10** |
 | Verilator `--lint-only -Wall` | **0 warnings** |
-| **cocotb gate-level simulation** (post-PnR netlist + sky130 cells) | **9/9** |
+| **cocotb gate-level simulation** (post-PnR netlist + sky130 cells) | **10/10** |
 | LibreLane hardening | **pass**, 42.0% utilisation |
 | Static timing, all 9 corners | setup **+10.27 ns**, hold **+0.104 ns** |
 | Routing DRC / Magic DRC / antenna | **0 / 0 / 0** |
@@ -121,7 +121,7 @@ winget install --id Icarus.Verilog          # the simulator
 | iCE40UP5K build (Yosys + nextpnr) | **pass**, 199/5280 LCs, 34.9 MHz |
 | FPGA on real hardware | pending a board |
 
-RTL and gate-level run the *same* nine tests with the *same* coverage,
+RTL and gate-level run the *same* ten tests with the *same* coverage,
 all 256 bytes, every jam level, both foreign-code cases. Gate level takes
 about 15 seconds.
 
@@ -136,6 +136,7 @@ about 15 seconds.
 | setup violations | **0** in all 9 corners |
 | hold violations | **0** in all 9 corners |
 | max capacitance violations | **0** |
+| max slew violations | **0** |
 | IR drop | **0.00%** (63.9 µV worst on 1.8 V) |
 | flow error log | **empty** |
 
@@ -148,15 +149,15 @@ netlist, and this is the check that rules that out.
 
 | metric | value |
 |---|---|
-| sequential cells | 109 (identical to the synthesis count) |
-| standard cells | 797, of which 313 combinational |
-| fill / tap cells | 2736 / 225 (inert, filling the unused 58%) |
+| sequential cells | 110 (identical to the synthesis count) |
+| standard cells | 794, of which 304 combinational |
+| fill / tap cells | 2722 / 225 (inert, filling the unused 58%) |
 | utilisation | 42.0% |
-| worst setup slack | +10.27 ns at a 20 ns period (slow corner) |
-| worst hold slack | +0.104 ns (fast corner) |
+| worst setup slack | +10.83 ns at a 20 ns period (slow corner) |
+| worst hold slack | +0.105 ns (fast corner) |
 | register to register slack | +13.08 ns, implying about 145 MHz internally |
 | clock to output, worst | 4.34 ns (`clk` pad to `uio_out[7]`) |
-| wirelength | 11 078 µm |
+| wirelength | 10 875 µm |
 | total power | 0.56 mW |
 
 Three disconnected pins are reported, all intentional and all flagged by the
@@ -166,14 +167,36 @@ as having no diffusion driver, which is the six `uio_out` bits tied low plus
 the eight constant `uio_oe` bits. The cell report confirms it from the other
 side, listing exactly fourteen `conb_1` tie cells.
 
-Two benign warnings, deliberately not "fixed": one max-fanout violation on
-`clkbuf_0_clk` (the clock-tree root buffer, created by CTS, not by the RTL),
-and ten max-slew violations of -0.008 ns against a 0.75 ns limit in the
-slowest corner. Both come from the reset net, which drives 86 of the 109
-flip-flops and is the critical path. With +10.27 ns of slack at 20 ns, and
-90 ns at the declared 10 MHz, reducing reset fanout would mean deleting
-resets, which would trade away the X-free gate-level simulation those resets
-buy. That is the wrong trade.
+One benign warning remains, deliberately not "fixed": a single max-fanout
+violation on `clkbuf_0_clk`, which is the clock-tree root buffer created by
+clock tree synthesis, not by the RTL. The reset net, which drives 86 of the
+110 flip-flops, is still the critical path, but with +10.83 ns of slack at a
+20 ns period and 90 ns at the declared 10 MHz there is nothing to gain by
+touching it.
+
+An earlier build also showed ten max-slew violations on that reset net, each
+0.008 ns over a 0.75 ns limit. They are gone in the current build. Being
+honest about why: they disappeared when the `TX_PINS_OFF` logic was added,
+and there is no mechanism by which that change should fix the reset tree.
+The netlist shifted slightly, placement and buffering re-ran, and this time
+the tree met the limit. That is a tool outcome that landed well, not a
+repair, and a future edit could bring them back.
+
+### Protection against output contention
+
+Two boards running this design both drive `uio[6]` and `uio[7]`, so wiring
+them together carelessly puts one output driver against another with only
+the drivers' on resistance limiting the current. Holding `uio_in[5]` high
+during reset sets `TX_PINS_OFF`, which tri-states both output pins for the
+whole run. `uio_oe` then reads `0x00` and the part drives nothing anywhere
+on the bidirectional bus, while still receiving normally and still running
+loopback internally.
+
+It costs one flip-flop that the design was already carrying as a reserved
+configuration field. The alternative of driving the pins only while
+transmitting was rejected because it leaves the chip and epoch lines
+floating between frames, and a floating epoch input can glitch a correlation
+window into existence.
 
 ## Remaining work
 
