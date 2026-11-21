@@ -1,8 +1,8 @@
 # JAMGUARD, a DSSS anti-jam link core for Tiny Tapeout SKY 26e
 
-A complete direct-sequence spread-spectrum modem on a single 1×1 Tiny Tapeout
-tile: a Gold-code spreader, a correlating despreader, and a built-in jammer so
-the anti-jam margin can be measured on the bench with no extra equipment.
+A direct sequence spread spectrum modem on a single 1×1 Tiny Tapeout
+tile: a Gold code spreader, a correlating despreader, and a built-in jammer so
+the anti-jam margin can be measured with no extra equipment.
 
 | | |
 |---|---|
@@ -36,7 +36,7 @@ tools/fpga_local.py        iCE40UP5K build via Yosys + nextpnr (WASM, no install
 
 ## Verifying the design
 
-The claims this chip makes are coding-theory claims, so they are checked
+The claims this chip makes are based from coding theory claims, and thus checked
 independently of the hardware:
 
 ```bash
