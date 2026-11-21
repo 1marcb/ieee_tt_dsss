@@ -64,6 +64,12 @@ jobs:
 
       - name: Install oss-cad-suite
         uses: YosysHQ/setup-oss-cad-suite@v4
+        with:
+          # The action resolves its download through the public GitHub API,
+          # which is rate limited when unauthenticated. Handing it the
+          # workflow token avoids an intermittent failure that looks like a
+          # toolchain problem but is really a 403 on the release lookup.
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Synthesise, place, route and pack
         shell: bash
