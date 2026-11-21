@@ -13,10 +13,10 @@ through cocotb's Python runner API:
 
 The gate-level mode needs two things the GDS run produces:
   * test/gate_level_netlist.v   (copied out of runs/wokwi/final/pnl/)
-  * a sky130A PDK at $PDK_ROOT  (volare installs one; see harden_local.py)
+  * a sky130A PDK at $PDK_ROOT  (volare installs one, see harden_local.py)
 
 Nothing here is used by CI, so it can never make CI pass while the real flow
-would fail -- the Makefile stays the single source of truth for that.
+would fail. The Makefile stays the single source of truth for that.
 """
 
 from __future__ import annotations

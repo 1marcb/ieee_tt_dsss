@@ -1,4 +1,4 @@
-# JAMGUARD — a DSSS anti-jam link core for Tiny Tapeout SKY 26e
+# JAMGUARD, a DSSS anti-jam link core for Tiny Tapeout SKY 26e
 
 A complete direct-sequence spread-spectrum modem on a single 1×1 Tiny Tapeout
 tile: a Gold-code spreader, a correlating despreader, and a built-in jammer so
@@ -7,18 +7,16 @@ the anti-jam margin can be measured on the bench with no extra equipment.
 | | |
 |---|---|
 | Shuttle | Tiny Tapeout **SKY 26e** (sky130A), closes 2026-11-30 |
-| Area | **1×1 tile** — 161.00 × 111.52 µm |
+| Area | **1×1 tile**, 161.00 × 111.52 µm |
 | Size | **109 flip-flops, 473 generic cells** (Yosys, technology independent) |
 | Top module | `tt_um_1marcb_jamguard` |
-| Clock | 10 MHz declared; hardened against a 20 ns period (50 MHz) for margin |
+| Clock | 10 MHz declared, hardened against a 20 ns period (50 MHz) for margin |
 | Code | length-31 Gold code, preferred pair `[5,2]` / `[5,4,3,2]` |
 | Processing gain | 10·log₁₀(31) = **14.9 dB** |
 | Jam tolerance | decodes through **15 of 31 corrupted chips (48%)** |
-| Foreign-code rejection | cross-correlation bounded at 9/31; lock needs 19/31 |
+| Foreign-code rejection | cross-correlation bounded at 9/31, lock needs 19/31 |
 
-See [docs/info.md](docs/info.md) for the datasheet and the bench demos, and
-[textbook/](textbook/) for the full derivation of the mathematics and the
-mapping from equations to RTL.
+See [docs/info.md](docs/info.md) for the datasheet and the bench demos.
 
 ## Repository layout
 
@@ -34,7 +32,6 @@ test/run_local.py          run the suite without GNU make (Windows)
 tools/harden_local.py      run the LibreLane hardening locally, in Docker
 tools/synth_stat.ys        quick Yosys cell/flip-flop count
 tools/fpga_local.py        iCE40UP5K build via Yosys + nextpnr (WASM, no install)
-textbook/                  standalone LaTeX text on the theory and the design
 ```
 
 ## Verifying the design
@@ -76,7 +73,7 @@ python tools/fpga_local.py       # FPGA: iCE40UP5K synthesis and timing
 Reproduces the CI hardening on this machine using the same LibreLane version
 and PDK revision, and prints utilization, timing slack and cell counts. It
 needs Docker running. Run outputs are kept in `%LOCALAPPDATA%\tt-jamguard`
-deliberately — LibreLane writes tens of thousands of files and this repository
+deliberately, because LibreLane writes tens of thousands of files and this
 lives in a synced folder.
 
 ## Local setup from scratch
@@ -103,7 +100,7 @@ winget install --id Icarus.Verilog          # the simulator
 | iCE40UP5K build (Yosys + nextpnr) | **pass**, 199/5280 LCs, 34.9 MHz |
 | FPGA on real hardware | pending a board |
 
-RTL and gate-level run the *same* eight tests with the *same* coverage —
+RTL and gate-level run the *same* eight tests with the *same* coverage,
 all 256 bytes, every jam level, both foreign-code cases. Gate level takes
 about 15 seconds.
 
@@ -122,10 +119,10 @@ about 15 seconds.
 
 Two benign warnings, deliberately not "fixed": one max-fanout violation on
 `clkbuf_0_clk` (the clock-tree root buffer, created by CTS, not by the RTL),
-and ten max-slew violations of −0.008 ns against a 0.75 ns limit in the
+and ten max-slew violations of -0.008 ns against a 0.75 ns limit in the
 slowest corner. Both come from the reset net, which drives 86 of the 109
-flip-flops and is the critical path. With +10.27 ns of slack at 20 ns — and
-90 ns at the declared 10 MHz — reducing reset fanout would mean deleting
+flip-flops and is the critical path. With +10.27 ns of slack at 20 ns, and
+90 ns at the declared 10 MHz, reducing reset fanout would mean deleting
 resets, which would trade away the X-free gate-level simulation those resets
 buy. That is the wrong trade.
 
@@ -133,7 +130,7 @@ buy. That is the wrong trade.
 
 - [ ] Push and confirm `test`, `gds`, `precheck`, `gl_test` green in CI
 - [ ] Load the bitstream on an iCE40 board and run the loopback + jammer demo
-      (`tools/fpga_local.py` already builds it; this is the step that
+      (`tools/fpga_local.py` already builds it, and this is the step that
       exercises genuinely asynchronous inputs)
 - [ ] Submit in the Tiny Tapeout app, apply the IEEE CS coupon, resubmit final commit
 - [ ] Optional: SymbiYosys formal properties

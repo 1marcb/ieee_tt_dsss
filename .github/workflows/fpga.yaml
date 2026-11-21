@@ -1,9 +1,22 @@
 name: fpga
 
+# An iCE40 build is a second, independent synthesis of the same RTL. It uses
+# a different synthesiser and a different technology from the ASIC flow, so
+# it catches constructs that happen to work in only one of them, and it
+# reports a real maximum clock frequency from place and route timing.
+# Loading the resulting bitstream on a board also exercises the one thing
+# simulation cannot reach, which is genuinely asynchronous inputs arriving at
+# arbitrary times relative to the clock.
+#
+# This runs the same three tool invocations that tt-support-tools uses in
+# tt_fpga.py (yosys with -DSYNTH, nextpnr-ice40 against the FabricFox pin
+# map at 12 MHz, then icepack), but calls them directly instead of going
+# through tt_fpga.py. The TinyTapeout fpga action installs the Python
+# dependencies under one interpreter and then puts the oss-cad-suite
+# interpreter first on PATH, so tt_fpga.py can fail to import its own
+# modules. Calling the tools directly removes that dependency entirely.
+
 on:
-  # Enabled on every push: an iCE40 build is a second, independent synthesis
-  # of the same RTL, and the bitstream is what exercises genuinely
-  # asynchronous inputs on real hardware.
   push:
   workflow_dispatch:
 
@@ -11,10 +24,85 @@ jobs:
   fpga:
     runs-on: ubuntu-24.04
     steps:
-      - name: checkout repo
+      - name: Checkout repo
         uses: actions/checkout@v6
         with:
           submodules: recursive
 
-      - name: FPGA bitstream for TT ASIC Sim (ICE40UP5K)
-        uses: TinyTapeout/tt-gds-action/fpga/ice40up5k@ttsky26e
+      - name: Checkout tt-support-tools
+        uses: actions/checkout@v6
+        with:
+          repository: TinyTapeout/tt-support-tools
+          path: tt
+          ref: main
+
+      - name: Setup python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Prepare the FPGA top level
+        shell: bash
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 - <<'PY'
+          import pathlib, yaml
+          info = yaml.safe_load(open("info.yaml"))["project"]
+          top = info["top_module"]
+          srcs = " ".join(f"src/{s}" for s in info["source_files"])
+          wrapper = pathlib.Path("tt/fpga/tt_fpga_top.v").read_text()
+          build = pathlib.Path("build")
+          build.mkdir(exist_ok=True)
+          # tt_fpga.py substitutes the real module name into the wrapper.
+          (build / "_tt_fpga_top.v").write_text(
+              wrapper.replace("__tt_um_placeholder", top))
+          (build / "top.txt").write_text(top)
+          (build / "sources.txt").write_text(srcs)
+          print(f"top module: {top}")
+          print(f"sources:    {srcs}")
+          PY
+
+      - name: Install oss-cad-suite
+        uses: YosysHQ/setup-oss-cad-suite@v4
+
+      - name: Synthesise, place, route and pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOP=$(cat build/top.txt)
+          SRCS=$(cat build/sources.txt)
+
+          yosys -l build/01-synth.log -DSYNTH \
+            -p "read_verilog -sv build/_tt_fpga_top.v $SRCS; synth_ice40 -top tt_fpga_top -json build/$TOP.json"
+
+          nextpnr-ice40 -l build/02-nextpnr.log \
+            --pcf-allow-unconstrained --seed 10 --freq 12 \
+            --package sg48 --up5k \
+            --pcf tt/fpga/tt_fpga_fabricfoxv2.pcf \
+            --json build/$TOP.json --asc build/$TOP.asc
+
+          icepack build/$TOP.asc build/$TOP.bin
+          ls -l build/$TOP.bin
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## FPGA build (iCE40UP5K, FabricFox pin map)"
+            echo
+            echo '```'
+            grep -E "Device utilisation|ICESTORM_LC|ICESTORM_RAM|SB_IO|Max frequency" \
+              build/02-nextpnr.log 2>/dev/null | sed 's/^Info: //' || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the bitstream
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fpga-bitstream
+          path: |
+            build/*.bin
+            build/*.asc
+            build/*.log

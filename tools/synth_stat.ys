@@ -3,7 +3,7 @@
 # Run from the repo root:
 #     .venv/Scripts/yowasp-yosys -q -s tools/synth_stat.ys
 #
-# This is NOT the real flow -- LibreLane maps to sky130 standard cells and
+# This is NOT the real flow. LibreLane maps to sky130 standard cells and
 # does placement and routing.  What this gives cheaply and on any machine is
 # the flip-flop count and a technology-independent gate count, which is the
 # number that decides whether the design fits a 1x1 tile at all.

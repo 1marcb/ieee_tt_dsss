@@ -9,7 +9,7 @@ hardware's margins are derived from:
 
     python jamguard_model.py
 
-Every convention here mirrors src/project.v exactly -- the LFSR shift
+Every convention here mirrors src/project.v exactly, including the LFSR shift
 direction, which bit is the output tap, the MSB-first bit order, and the
 decision thresholds.  If you change one, change the other.
 """
@@ -34,7 +34,7 @@ TAPS_B = (4, 3, 2, 1)    # x^5 + x^4 + x^3 + x^2 + 1
 LOCK_HI = 25
 LOCK_LO = 6
 
-# Jammer thresholds indexed by jam_level; flip probability is thresh/32.
+# Jammer thresholds indexed by jam_level, flip probability is thresh/32.
 # Chosen so the four levels land in the four distinct regimes:
 #   0,1 -> lock holds and data is clean
 #   2   -> lock is lost but the majority vote still decodes

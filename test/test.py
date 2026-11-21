@@ -132,7 +132,7 @@ async def drive_chips(dut, uio, chips, epoch=True, watch=None):
     The loop body is "drive, then wait for the next falling edge", which only
     presents each chip to exactly one rising edge if we enter it just after a
     falling edge.  This leading wait establishes that position from either
-    starting phase -- without it the first chip of the stream is overwritten
+    starting phase. Without it the first chip of the stream is overwritten
     before any rising edge samples it, and the whole stream shifts by one.
     """
     await FallingEdge(dut.clk)
@@ -186,7 +186,7 @@ async def test_tx_chip_sequence(dut):
     await FallingEdge(dut.clk)
     uio.set(tx_start=0)
 
-    # Hunt for the first epoch strobe; it is coincident with chip 0.
+    # Hunt for the first epoch strobe, which is coincident with chip 0.
     for _ in range(32):
         await FallingEdge(dut.clk)
         if tx_epoch(dut):
@@ -262,7 +262,7 @@ async def test_jam_margin_exact(dut):
 
     Errors are injected from Python rather than by the on-chip jammer so the
     count is exact.  The majority vote over 31 chips must be right for every
-    J <= 15 and must invert for every J >= 16 -- that cliff is the whole point
+    J <= 15 and must invert for every J >= 16. That cliff is the whole point
     of the processing gain.
     """
     code_id = 5
@@ -306,7 +306,7 @@ async def test_foreign_code_aligned(dut):
     pair takes only the values {-9,-1,+7}, i.e. M in {11,15,19}.  A data bit
     of 1 inverts the transmitted code, which maps R -> -R and therefore
     M -> 31-M, adding {20,16,12}.  So the complete set of aligned impostor
-    match counts is {11,12,15,16,19,20} -- every one of them strictly inside
+    match counts is {11,12,15,16,19,20}, every one of them strictly inside
     the lock window of M <= 6 or M >= 25.
 
     Alignment is guaranteed here by running epoch-slaved, which isolates the
@@ -353,9 +353,9 @@ async def test_foreign_code_acquiring(dut):
 
     This is the harder case and the reason LOCK is set at |R| >= 19 instead of
     just above the Gold bound of 9.  An unacquired receiver slides its window
-    across data-bit boundaries, so it sees sums of two partial correlations;
+    across data-bit boundaries, so it sees sums of two partial correlations,
     those are not covered by the Gold bound and reach |R| = 17.  At a threshold
-    of 13 this test fails -- the receiver locks onto the wrong transmitter.
+    of 13 this test fails, because it locks onto the wrong transmitter.
     """
     rx_code = 19
     tx_code = 7                      # what the air actually carries
@@ -381,7 +381,7 @@ async def test_foreign_code_acquiring(dut):
             "(lock threshold is too low for free-running operation)"
         )
         assert st["valid"] == 0, f"delivered a byte from a foreign code: {st}"
-        # m_last reads 0 until the first window completes; a real M of 0
+        # m_last reads 0 until the first window completes, and a real M of 0
         # would be |R| = 31 and would have tripped the lock assert above, so
         # skipping zeros here only excludes the reset state.
         if st["m_last"]:

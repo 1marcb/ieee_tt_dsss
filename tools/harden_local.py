@@ -177,7 +177,7 @@ def build_merged_config() -> dict:
             / f"tt_block_{tiles}_pg.def").exists():
         sys.exit(f"DEF template for {tiles} not found in tt-support-tools")
 
-    # src/config.json repeats the key "//" for its comments; json keeps the
+    # src/config.json repeats the key "//" for its comments, and json keeps the
     # last one, which is harmless because every real setting is unique.
     with open(REPO / "src" / "config.json", encoding="utf-8") as fh:
         config = json.load(fh)
@@ -233,7 +233,7 @@ def copy_in(config: dict) -> None:
 def harden() -> int:
     print("\n[librelane] starting flow "
           "(expect roughly 5-15 minutes for a 1x1 tile)\n")
-    # --force-run-dir must already exist; tt_tool.py makes it before calling
+    # The run directory must already exist, and tt_tool.py makes it before
     # LibreLane, so do the same here.
     return dexec(
         "bash", "-c",

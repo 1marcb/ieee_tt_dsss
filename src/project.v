@@ -1,5 +1,5 @@
 /*
- * JAMGUARD -- a DSSS (direct-sequence spread-spectrum) anti-jam link core
+ * JAMGUARD, a DSSS (direct-sequence spread-spectrum) anti-jam link core
  *
  * Copyright (c) 2026 Marc Boudames (github: 1marcb)
  * SPDX-License-Identifier: Apache-2.0
@@ -27,7 +27,7 @@
  *   ui_in [6:5]  jam_level    jammer strength 0..3
  *   ui_in [7]    acq_en       1 = self-acquiring receiver (gated on lock)
  *                             0 = receiver slaved to rx_epoch_in (ungated)
- *   uio_in[4:0]  rx_code_id   receiver code_id; 0 means "same as TX".  Set it
+ *   uio_in[4:0]  rx_code_id   receiver code_id, 0 means "same as TX".  Set
  *                             different from tx_code_id to watch the receiver
  *                             reject a foreign transmitter.
  *   uio_in[5]    reserved, tie low
@@ -37,7 +37,7 @@
  *   uo_out[7:0]  rx_data      last fully received byte      (disp_sel = 0)
  *                status       {valid, locked, hunting, m_last[4:0]}
  *                                                           (disp_sel = 1)
- *   uio[0] in    tx_start     rising edge sends one byte; hold high to stream
+ *   uio[0] in    tx_start     rising edge sends one byte, hold high to stream
  *   uio[1] in    rx_chip_in   received chip stream, one chip per clock
  *   uio[2] in    rx_epoch_in  pulses on the first chip of each 31-chip code
  *   uio[3] in    loopback_en  1 = wire the transmitter into the receiver
@@ -77,7 +77,7 @@ module tt_um_1marcb_jamguard (
   // Why 19 and not something just above the Gold bound of 9?  Because the
   // t(n) = 9 bound only covers windows ALIGNED to a code period.  A receiver
   // that has not acquired yet slides its window freely and also sees windows
-  // straddling two data bits; those are sums of two partial correlations, the
+  // straddling two data bits, and those are sums of two partial correlations,
   // bound does not apply, and they reach |R| = 17.  A threshold of 13 lets a
   // free-running receiver false-lock onto a foreign transmitter about 17% of
   // the time.  19 clears the measured worst case of 17 with margin and costs
@@ -155,7 +155,7 @@ module tt_um_1marcb_jamguard (
   //     B:  x^5 + x^4 + x^3 + x^2 + 1      taps b[4], b[3], b[2], b[1]
   // The chip is the XOR of the two outputs.  Shifting B relative to A selects
   // one of the 31 Gold codes, and shifting B is the same thing as changing its
-  // seed -- which is why code_id is simply the seed of B.
+  // seed, which is why code_id is simply the seed of B.
   //
   // Both LFSRs are reloaded at chip 0 of every code period, so exactly one
   // full code period covers exactly one data bit ("short code" DSSS).
@@ -285,7 +285,7 @@ module tt_um_1marcb_jamguard (
   wire locked = conf[1];     // conf >= 2
 
   // In epoch-slaved mode the epoch strobe arrives on the same clock as chip 0,
-  // so chip 0 must be processed on that very cycle -- hence win_start_now and
+  // so chip 0 must be processed on that very cycle, hence win_start_now and
   // cur_idx rather than simply using the registered rx_idx.
   wire       win_start_now = (~acq_en) & rx_epoch & ~rx_active;
   wire       chip_tick     = (rx_active | win_start_now) & ~rx_slip;
@@ -305,7 +305,7 @@ module tt_um_1marcb_jamguard (
 
   // In self-acquiring mode nothing is believed until the correlator locks.
   // In epoch-slaved mode the external epoch is trusted, so bits are always
-  // accumulated -- that is the lab mode used to measure raw bit error rate
+  // accumulated, which is the lab mode used to measure raw bit error rate
   // past the point where lock is lost.
   wire accumulate = acq_en ? locked : 1'b1;
 

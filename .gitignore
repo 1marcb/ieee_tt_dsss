@@ -25,3 +25,6 @@ textbook/*.fls
 textbook/*.fdb_latexmk
 textbook/*.synctex.gz
 build/
+
+# the textbook is kept locally and is not published in this repository
+textbook/

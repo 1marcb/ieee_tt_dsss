@@ -31,7 +31,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 BUILD = REPO / "build" / "fpga"
-# tools/harden_local.py caches tt-support-tools here; reuse it.
+# tools/harden_local.py caches tt-support-tools here, so reuse it.
 TOOLS_CACHE = Path(
     __import__("os").environ.get("LOCALAPPDATA", str(Path.home()))
 ) / "tt-jamguard" / "tt-support-tools"
@@ -69,7 +69,7 @@ def main() -> int:
     BUILD.mkdir(parents=True, exist_ok=True)
     name = top_module()
 
-    # The Tiny Tapeout FPGA wrapper instantiates a placeholder name; the
+    # The Tiny Tapeout FPGA wrapper instantiates a placeholder name, and the
     # workflow substitutes the real module. Do the same.
     wrapper_src = (TOOLS_CACHE / "fpga" / "tt_fpga_top.v").read_text(
         encoding="utf-8")
