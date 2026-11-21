@@ -149,11 +149,44 @@ correlator is searching and clears when it locks.
 
 ### Demo 5: two boards
 
-Wire board A's `TX_CHIP` (`uio[6]`) to board B's `RX_CHIP` (`uio[1]`), and
-`TX_EPOCH` (`uio[7]`) to `RX_EPOCH` (`uio[2]`). **Share `clk` and `gnd`**: one
-chip is transmitted per clock, so the two boards must be clocked together.
+> **Do not join the two PMOD headers with a straight-through cable.** Both
+> chips run the same design, so both drive `uio[6]` and `uio[7]` as outputs
+> (`uio_oe = 8'b1100_0000`). A pin for pin cable shorts A's `uio[6]` output
+> against B's `uio[6]` output, and whenever they disagree one driver pulls to
+> 3.3 V while the other pulls to ground. Use a crossover.
+
+Four wires, and nothing else:
+
+| board A | | board B |
+|---|---|---|
+| `uio[6]` TX_CHIP (out) | to | `uio[1]` RX_CHIP (in) |
+| `uio[7]` TX_EPOCH (out) | to | `uio[2]` RX_EPOCH (in) |
+| `clk` | shared | `clk` |
+| `gnd` | shared | `gnd` |
+
+Leave B's `uio[6]` and `uio[7]` unconnected.
+
+**The clock must be shared.** The receiver samples one chip per clock and has
+no clock recovery. Two free-running oscillators 100 ppm apart would slip a
+chip every ten thousand, so the link would work for a while and then fail
+periodically, which is a far more confusing failure than not working at all.
+
 Give both the same `CODE_ID` and bytes typed on A appear on B. Change B's
 `RX_CODE_ID` and the link goes dead.
+
+Timing closes comfortably. At 10 MHz the period is 100 ns, the transmitter's
+outputs are valid 4.34 ns after the clock edge (post-layout, slow corner), and
+even allowing the full Tiny Tapeout pad budget at both ends the round trip is
+about 68 ns. If a two-board link misbehaves, suspect the shared clock, the
+crossover wiring or a missing ground long before suspecting timing.
+
+### Everything you can demo on one board
+
+Four of the five demos above need no wiring at all: loopback, the jam ladder,
+acquisition, and foreign-code rejection. The last one works on a single board
+because `RX_CODE_ID` is a separate field from `CODE_ID`, so one chip can
+transmit on code 7 while listening on code 19. A second board only adds the
+sight of two physical chips talking.
 
 If you only wire `TX_CHIP` and set `ACQ_EN = 1` on the receiver, it will find
 the phase by itself, but byte framing then starts wherever acquisition

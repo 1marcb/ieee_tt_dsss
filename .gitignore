@@ -28,3 +28,6 @@ build/
 
 # the textbook is kept locally and is not published in this repository
 textbook/
+
+# uploaded tool log archives, kept locally
+*.zip

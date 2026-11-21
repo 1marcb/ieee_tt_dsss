@@ -125,6 +125,25 @@ RTL and gate-level run the *same* nine tests with the *same* coverage,
 all 256 bytes, every jam level, both foreign-code cases. Gate level takes
 about 15 seconds.
 
+### Signoff, from the CI run that built the submitted GDS
+
+| check | result |
+|---|---|
+| **LVS (netgen)** | **circuits match uniquely** |
+| Magic DRC | **0** errors |
+| detailed routing DRC | **0** errors |
+| antenna violations | **0** nets, **0** diodes needed |
+| setup violations | **0** in all 9 corners |
+| hold violations | **0** in all 9 corners |
+| max capacitance violations | **0** |
+| IR drop | **0.00%** (63.9 µV worst on 1.8 V) |
+| flow error log | **empty** |
+
+LVS matching uniquely is the line that matters most. It says the extracted
+layout and the synthesised netlist are the same circuit. A design can pass
+every simulation and still be wrong if the layout does not implement the
+netlist, and this is the check that rules that out.
+
 ### Post-layout results
 
 | metric | value |
@@ -135,8 +154,17 @@ about 15 seconds.
 | utilisation | 42.0% |
 | worst setup slack | +10.27 ns at a 20 ns period (slow corner) |
 | worst hold slack | +0.104 ns (fast corner) |
+| register to register slack | +13.08 ns, implying about 145 MHz internally |
+| clock to output, worst | 4.34 ns (`clk` pad to `uio_out[7]`) |
 | wirelength | 11 078 µm |
 | total power | 0.56 mW |
+
+Three disconnected pins are reported, all intentional and all flagged by the
+tool as zero critical: `ena`, `uio_in[6]` and `uio_in[7]`, which are exactly
+the three signals in the `_unused` expression. Fourteen outputs are reported
+as having no diffusion driver, which is the six `uio_out` bits tied low plus
+the eight constant `uio_oe` bits. The cell report confirms it from the other
+side, listing exactly fourteen `conb_1` tie cells.
 
 Two benign warnings, deliberately not "fixed": one max-fanout violation on
 `clkbuf_0_clk` (the clock-tree root buffer, created by CTS, not by the RTL),
@@ -149,7 +177,7 @@ buy. That is the wrong trade.
 
 ## Remaining work
 
-- [ ] Push and confirm `test`, `gds`, `precheck`, `gl_test` green in CI
+- [x] `test`, `gds`, `precheck`, `gl_test`, `fpga`, `docs` and `viewer` all green in CI
 - [ ] Load the bitstream on an iCE40 board and run the loopback + jammer demo
       (`tools/fpga_local.py` already builds it, and this is the step that
       exercises genuinely asynchronous inputs)
