@@ -58,10 +58,31 @@ python test/run_local.py           # same thing, no make needed (Windows)
 python test/run_local.py --gl      # against the hardened netlist
 ```
 
-Eight tests: reset state, the 248-chip transmit frame chip-for-chip, a
+Nine tests: reset state, the 248-chip transmit frame chip-for-chip, a
 256-byte loopback sweep, the exact jam cliff at J=15/16, foreign-code rejection
 both aligned and free-running, serial-search acquisition from a wrong phase,
-and the four-tier jammer ladder.
+the four-tier jammer ladder, and control inputs driven at random sub-cycle
+offsets.
+
+### Clock domain crossing audit
+
+Every external pin that feeds a control decision passes through a two-stage
+synchroniser. Three places sample an input pin directly instead:
+
+| site | signal | why it is acceptable |
+|---|---|---|
+| `cfg_a <= ui_in` | configuration | loaded only while `rst_n` is low, from switches a human sets beforehand |
+| `cfg_b <= uio_in[5:0]` | configuration | same |
+| `tx_shift <= ui_in` | transmit data | the data byte, static during a frame by construction |
+
+The distinction that matters is that none of those feed a state machine. They
+land in data registers, so a sample taken while a switch is moving yields a
+wrong value, not an illegal state. The classic fatal crossing bug, where one
+asynchronous signal reconverges on two paths and a state machine sees it two
+different ways, cannot occur here because every control input is
+synchronised. Adding synchronisers to `ui_in` would cost 16 flip-flops and
+would not remove the underlying race, which is inherent to sampling a
+mechanical switch.
 
 ## Local hardening
 
@@ -90,9 +111,9 @@ winget install --id Icarus.Verilog          # the simulator
 | check | result |
 |---|---|
 | Software model self-check (coding theory proved from scratch) | **pass** |
-| cocotb RTL simulation | **8/8** |
+| cocotb RTL simulation | **9/9** |
 | Verilator `--lint-only -Wall` | **0 warnings** |
-| **cocotb gate-level simulation** (post-PnR netlist + sky130 cells) | **8/8** |
+| **cocotb gate-level simulation** (post-PnR netlist + sky130 cells) | **9/9** |
 | LibreLane hardening | **pass**, 42.0% utilisation |
 | Static timing, all 9 corners | setup **+10.27 ns**, hold **+0.104 ns** |
 | Routing DRC / Magic DRC / antenna | **0 / 0 / 0** |
@@ -100,7 +121,7 @@ winget install --id Icarus.Verilog          # the simulator
 | iCE40UP5K build (Yosys + nextpnr) | **pass**, 199/5280 LCs, 34.9 MHz |
 | FPGA on real hardware | pending a board |
 
-RTL and gate-level run the *same* eight tests with the *same* coverage,
+RTL and gate-level run the *same* nine tests with the *same* coverage,
 all 256 bytes, every jam level, both foreign-code cases. Gate level takes
 about 15 seconds.
 

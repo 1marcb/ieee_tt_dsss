@@ -11,9 +11,11 @@ synthesis, so probing them would pass at RTL and fail at gate level.  Waits are
 expressed in clock cycles rather than absolute time for the same reason.
 """
 
+import random
+
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, FallingEdge
+from cocotb.triggers import ClockCycles, FallingEdge, Timer
 
 from jamguard_model import (
     L,
@@ -495,3 +497,69 @@ async def test_onchip_jammer_ladder(dut):
     assert results[3][1] > results[1][1], "BER must grow with jammer strength"
     dut._log.info("jam ladder: %s",
                   {k: f"BER={v[1]:.3f} locked={v[2]}" for k, v in results.items()})
+
+
+# ---------------------------------------------------------------------------
+# 8. Control inputs that are not aligned to the clock
+# ---------------------------------------------------------------------------
+
+@cocotb.test()
+async def test_async_control_timing(dut):
+    """Drive the control pins at times that are not aligned to the clock.
+
+    Every other test in this file changes inputs on a clean half cycle
+    boundary, which is a comfortable fiction. The real chip is wired to slide
+    switches, jumper wires and possibly a second chip, and those change
+    whenever they like. This test asserts and releases tx_start at random sub
+    cycle offsets so the pin moves arbitrarily close to a rising edge, and it
+    holds the pulse for a deliberately non integer number of cycles.
+
+    What this does catch is the logic bug class an FPGA would catch. An edge
+    detector that emits two pulses, a pulse narrower than the synchroniser can
+    pass, or control logic that assumes an input is stable for a whole cycle.
+    What it cannot do is model metastability, because a digital simulator
+    resolves every sample to a clean 0 or 1. Real silicon confidence for that
+    part comes from the two flop synchronisers, which Section 7.5 of the
+    design notes covers, and ultimately from a board.
+    """
+    code_id = 9
+    start_clock(dut)
+    uio = await reset(dut, tx_code=code_id, acq=False)
+    uio.set(loopback=1, jam_en=0, disp_sel=0)
+    await ClockCycles(dut.clk, 3)
+
+    rng = random.Random(20261129)
+    payload = [0x00, 0xFF, 0xA5, 0x5A, 0x3C, 0xC3, 0x01, 0x80]
+
+    # Work in whole picoseconds. The test bench timescale is 1ns/1ps, so an
+    # arbitrary float number of nanoseconds is not representable and cocotb
+    # rejects it rather than silently rounding.
+    period_ps = CLK_NS * 1000
+
+    for value in payload:
+        dut.ui_in.value = value
+
+        # Assert somewhere inside a clock period rather than on an edge,
+        # including within 1 ps of the rising edge.
+        offset = rng.randrange(1, period_ps)
+        await Timer(offset, "ps")
+        uio.set(tx_start=1)
+
+        # Hold for a width that is never a whole number of cycles.
+        width = rng.randrange(period_ps + 1, 3 * period_ps)
+        await Timer(width, "ps")
+        uio.set(tx_start=0)
+
+        await ClockCycles(dut.clk, 8 * L + 24)
+        got = int(dut.uo_out.value)
+        assert got == value, (
+            f"async timing: sent {value:#04x}, got {got:#04x} "
+            f"(start asserted at +{offset} ps, held {width} ps)"
+        )
+
+    uio.set(disp_sel=1)
+    await ClockCycles(dut.clk, 3)
+    st = status_fields(int(dut.uo_out.value))
+    assert st["locked"] == 1 and st["valid"] == 1, st
+    dut._log.info("%d bytes survived start pulses at arbitrary sub cycle "
+                  "offsets and widths", len(payload))
