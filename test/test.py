@@ -22,9 +22,19 @@ from jamguard_model import (
     JAM_THRESH,
     LOCK_HI,
     LOCK_LO,
+    PARK_CH,
+    FrameReceiver,
+    despread_bits,
     despread_byte,
+    fec_decode_payload,
+    fec_encode_byte,
+    frame_bits,
     gold_code,
+    hop_channels,
+    in_band,
+    spread_bits,
     spread_byte,
+    spread_frame,
 )
 
 CLK_NS = 100  # 10 MHz, the clock rate declared in info.yaml
@@ -82,26 +92,50 @@ def start_clock(dut):
     cocotb.start_soon(Clock(dut.clk, CLK_NS, unit="ns").start())
 
 
+def mode_byte(fec=False, framed=False, fhss=False, pbj=False, jam_fine=False,
+              disp_page=0, tx_pins_off=False):
+    """Page 1 ui_in value, see the header of src/project.v."""
+    return (int(fec) | int(framed) << 1 | int(fhss) << 2 | int(pbj) << 3
+            | int(jam_fine) << 4 | (disp_page & 3) << 5 | int(tx_pins_off) << 7)
+
+
 async def reset(dut, tx_code, jam_level=0, acq=False, rx_code=0,
-                tx_pins_off=False):
+                tx_pins_off=False, fec=False, framed=False, fhss=False,
+                pbj=False, disp_page=0, hop_fast=False, pbj_band=0,
+                page1=None):
     """Reset the DUT and latch a configuration off the pins.
 
-    The configuration flops track ui_in / uio_in[5:0] the whole time rst_n is
-    low, so the value present when reset releases is what gets kept.
+    The configuration flops track the pins the whole time rst_n is low, so
+    the value present when reset releases is what gets kept.  uio_in[5]
+    selects the page being written: page 0 (code IDs, jam level, acquisition)
+    is written first, which also clears page 1, then page 1 (the mode byte
+    and its extension) is written only if any of its fields are non-zero.
 
-    tx_pins_off drives uio_in[5] high during reset, which tri-states the two
-    output pins for the life of the run.
+    jam_level 0..3 is the coarse ladder, 4..7 the fine one (sets jam_fine).
+    page1=True forces a page-1 write even when every mode field is zero.
     """
     uio = Uio(dut)
     dut.ena.value = 1
     dut.rst_n.value = 0
+
+    # Page 0
     dut.ui_in.value = (
         ((1 if acq else 0) << 7) | ((jam_level & 3) << 5) | (tx_code & 0x1F)
     )
-    uio.val = (rx_code & 0x1F) | ((1 << 5) if tx_pins_off else 0)
+    uio.val = rx_code & 0x1F
     dut.uio_in.value = uio.val
-
     await ClockCycles(dut.clk, 6)
+
+    # Page 1
+    mb = mode_byte(fec, framed, fhss, pbj, jam_level >= 4, disp_page,
+                   tx_pins_off)
+    m2 = int(hop_fast) | (pbj_band & 3) << 1
+    if page1 or (page1 is None and (mb or m2)):
+        dut.ui_in.value = mb
+        uio.val = (1 << 5) | m2
+        dut.uio_in.value = uio.val
+        await ClockCycles(dut.clk, 4)
+
     await FallingEdge(dut.clk)
     dut.rst_n.value = 1
 
@@ -117,15 +151,44 @@ async def reset(dut, tx_code, jam_level=0, acq=False, rx_code=0,
     return uio
 
 
-async def send_byte(dut, uio, value, slack=12):
-    """Pulse tx_start, then wait out the whole 8 x 31 chip frame."""
+def frame_len(fec=False, framed=False):
+    """Bits per frame, header included."""
+    return (16 if fec else 8) + (8 if framed else 0)
+
+
+async def send_byte(dut, uio, value, slack=12, nbits=8):
+    """Pulse tx_start, then wait out the whole nbits x 31 chip frame."""
     dut.ui_in.value = value
     uio.set(tx_start=1)
     await FallingEdge(dut.clk)
     await FallingEdge(dut.clk)
     uio.set(tx_start=0)
-    await ClockCycles(dut.clk, 8 * L + slack)
+    await ClockCycles(dut.clk, nbits * L + slack)
     await FallingEdge(dut.clk)
+
+
+def page1_fields(byte_val):
+    """Unpack status page 1: {valid, locked, in_frame, fec_err, fix[1:0], frames[1:0]}."""
+    return {
+        "valid": (byte_val >> 7) & 1,
+        "locked": (byte_val >> 6) & 1,
+        "in_frame": (byte_val >> 5) & 1,
+        "fec_err": (byte_val >> 4) & 1,
+        "fec_fix": (byte_val >> 2) & 3,
+        "frames": byte_val & 3,
+    }
+
+
+async def read_status(dut, uio):
+    """Flip DISP_SEL to the status page, read it, flip back."""
+    uio.set(disp_sel=1)
+    await ClockCycles(dut.clk, 3)
+    await FallingEdge(dut.clk)
+    val = int(dut.uo_out.value)
+    uio.set(disp_sel=0)
+    await ClockCycles(dut.clk, 3)
+    await FallingEdge(dut.clk)
+    return val
 
 
 async def drive_chips(dut, uio, chips, epoch=True, watch=None):
@@ -575,7 +638,7 @@ async def test_async_control_timing(dut):
 
 @cocotb.test()
 async def test_tx_pins_off(dut):
-    """uio_in[5] at reset must tri-state both output pins for the whole run.
+    """TX_PINS_OFF (page 1) must tri-state both output pins for the whole run.
 
     Two boards running this design both drive uio[7:6]. Wiring them together
     without care therefore puts one output driver against another, with only
@@ -624,3 +687,461 @@ async def test_tx_pins_off(dut):
 
     dut._log.info("tx_pins_off tri-states uio[7:6] for the whole run while "
                   "loopback and the external receive path both still work")
+
+
+# ===========================================================================
+# 1x2 features
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# 11. Configuration pages
+# ---------------------------------------------------------------------------
+
+@cocotb.test()
+async def test_config_pages(dut):
+    """Page 1 must take effect, and a page-0-only reset must clear it again.
+
+    Page 0 clearing page 1 is what keeps the mode registers defined after any
+    reset, so a board reset with uio[5] low always comes up in plain DSSS.
+    """
+    start_clock(dut)
+
+    uio = await reset(dut, tx_code=7, tx_pins_off=True, disp_page=2)
+    assert int(dut.uio_oe.value) == 0, "page 1 tx_pins_off not applied"
+    uio.set(disp_sel=1)
+    await ClockCycles(dut.clk, 3)
+    assert int(dut.uo_out.value) == PARK_CH, (
+        f"page 2 idle should show the parked channel, got {int(dut.uo_out.value):#04x}"
+    )
+
+    # FHSS on: an idle transmitter sits at its hop seed {code_id, 1}.
+    uio = await reset(dut, tx_code=7, fhss=True, disp_page=2)
+    uio.set(disp_sel=1)
+    await ClockCycles(dut.clk, 3)
+    assert int(dut.uo_out.value) == (7 << 1) | 1, int(dut.uo_out.value)
+
+    # Page 0 only: every mode field must be back to zero.
+    uio = await reset(dut, tx_code=7)
+    assert int(dut.uio_oe.value) == 0b1100_0000, "page 0 did not clear page 1"
+    uio.set(disp_sel=1)
+    await ClockCycles(dut.clk, 3)
+    st = status_fields(int(dut.uo_out.value))
+    assert st == {"valid": 0, "locked": 0, "hunting": 0, "m_last": 0}, (
+        f"disp_page should be back to 0, got {st}"
+    )
+    dut._log.info("page 1 applies, page 0 clears it")
+
+
+# ---------------------------------------------------------------------------
+# 12. Transmit frame formats
+# ---------------------------------------------------------------------------
+
+@cocotb.test()
+async def test_tx_frame_formats(dut):
+    """Every frame format must match the model chip for chip."""
+    code_id = 9
+    data = 0x3C
+    start_clock(dut)
+
+    for fec, framed in ((True, False), (False, True), (True, True)):
+        uio = await reset(dut, tx_code=code_id, fec=fec, framed=framed)
+        nbits = frame_len(fec, framed)
+
+        dut.ui_in.value = data
+        uio.set(tx_start=1)
+        await FallingEdge(dut.clk)
+        await FallingEdge(dut.clk)
+        uio.set(tx_start=0)
+        for _ in range(32):
+            await FallingEdge(dut.clk)
+            if tx_epoch(dut):
+                break
+        else:
+            raise AssertionError("tx_epoch_out never asserted")
+
+        chips, epochs = [tx_chip(dut)], [0]
+        for i in range(1, nbits * L):
+            await FallingEdge(dut.clk)
+            chips.append(tx_chip(dut))
+            if tx_epoch(dut):
+                epochs.append(i)
+        await ClockCycles(dut.clk, 4)
+
+        expected = spread_frame(data, code_id, fec=fec, framed=framed)
+        assert chips == expected, (
+            f"fec={fec} framed={framed}: chip mismatch at "
+            f"{next(i for i, (a, b) in enumerate(zip(chips, expected)) if a != b)}"
+        )
+        assert epochs == [i * L for i in range(nbits)], epochs
+        dut._log.info("fec=%d framed=%d: %d bits, %d chips match the model",
+                      fec, framed, nbits, len(chips))
+
+
+# ---------------------------------------------------------------------------
+# 13. Loopback in every frame format
+# ---------------------------------------------------------------------------
+
+@cocotb.test()
+async def test_loopback_all_modes(dut):
+    """Round trip with FEC and/or framing on.  FEC + framing does all 256."""
+    code_id = 13
+    start_clock(dut)
+
+    plans = (
+        (True, True, list(range(256))),
+        (True, False, list(range(0, 256, 4))),
+        (False, True, list(range(1, 256, 4))),
+    )
+    for fec, framed, values in plans:
+        uio = await reset(dut, tx_code=code_id, fec=fec, framed=framed,
+                          disp_page=1, page1=True)
+        uio.set(loopback=1, jam_en=0, disp_sel=0)
+        await ClockCycles(dut.clk, 3)
+        nbits = frame_len(fec, framed)
+
+        for value in values:
+            await send_byte(dut, uio, value, nbits=nbits)
+            got = int(dut.uo_out.value)
+            assert got == value, (
+                f"fec={fec} framed={framed}: sent {value:#04x}, got {got:#04x}"
+            )
+
+        st = page1_fields(await read_status(dut, uio))
+        assert st["valid"] == 1 and st["locked"] == 1, st
+        assert st["fec_err"] == 0 and st["fec_fix"] == 0, (
+            f"a clean channel must need no corrections: {st}"
+        )
+        assert st["frames"] == len(values) % 4, st
+        dut._log.info("fec=%d framed=%d: %d bytes round-tripped, status %s",
+                      fec, framed, len(values), st)
+
+
+# ---------------------------------------------------------------------------
+# 14. FEC on injected bit errors
+# ---------------------------------------------------------------------------
+
+def _flip_bits(bits, positions):
+    out = list(bits)
+    for p in positions:
+        out[p] ^= 1
+    return out
+
+
+@cocotb.test()
+async def test_fec_injected_errors(dut):
+    """Corrupt whole data bits on purpose and check SECDED against the model.
+
+    A bit is corrupted by inverting all 31 of its chips, which is a decision
+    error with no ambiguity.  Positions are in transmission order, where even
+    positions belong to the high codeword and odd ones to the low codeword.
+    """
+    code_id = 3
+    value = 0xB7
+    start_clock(dut)
+    clean = frame_bits(value, fec=True)
+
+    cases = {
+        "clean": [],
+        "one error, high cw": [0],
+        "one error, low cw": [5],
+        "adjacent burst, one per cw": [6, 7],
+        "parity bit only": [15],
+        "two errors in high cw": [0, 2],
+        "two errors in both": [0, 4, 1, 3],
+    }
+    for name, positions in cases.items():
+        bits = _flip_bits(clean, positions)
+        rx = FrameReceiver(fec=True)
+        for b in bits:
+            rx.push(b)
+        exp_byte, exp_raw, exp_fix, exp_err = rx.out[0]
+
+        for page in (1, 3):
+            uio = await reset(dut, tx_code=code_id, fec=True, disp_page=page)
+            uio.set(loopback=0, jam_en=0, disp_sel=0)
+            await ClockCycles(dut.clk, 3)
+            await drive_chips(dut, uio, spread_bits(bits, code_id))
+            await ClockCycles(dut.clk, 6)
+
+            got = int(dut.uo_out.value)
+            assert got == exp_byte, f"{name}: byte {got:#04x}, model {exp_byte:#04x}"
+            status = await read_status(dut, uio)
+            if page == 1:
+                st = page1_fields(status)
+                assert st["fec_fix"] == exp_fix and st["fec_err"] == int(exp_err), (
+                    f"{name}: flags {st}, model fix={exp_fix} err={exp_err}"
+                )
+            else:
+                assert status == exp_raw, (
+                    f"{name}: raw {status:#04x}, model {exp_raw:#04x}"
+                )
+
+        if len(positions) <= 1 or name.startswith("adjacent"):
+            assert exp_byte == value, f"{name} must be corrected"
+        dut._log.info("%-28s -> rx %#04x raw %#04x fix=%s err=%d",
+                      name, exp_byte, exp_raw, format(exp_fix, "02b"),
+                      exp_err)
+
+
+# ---------------------------------------------------------------------------
+# 15. FEC against the on-chip jammer
+# ---------------------------------------------------------------------------
+
+@cocotb.test()
+async def test_fec_beats_jammer(dut):
+    """At a jam level that breaks the plain link, FEC must recover it.
+
+    Fine level 6 flips 31% of chips.  Theory (jamguard_model.py) puts the
+    raw byte error rate at 11% and the FEC byte error rate at 1.1%.  The
+    receiver runs epoch-slaved, because lock is genuinely lost at this
+    density, and the point here is the decoder, not acquisition.
+    """
+    code_id = 17
+    level = 6
+    rng = random.Random(4242)
+    payload = [rng.randrange(256) for _ in range(40)]
+    start_clock(dut)
+
+    results = {}
+    for fec in (False, True):
+        uio = await reset(dut, tx_code=code_id, jam_level=level, acq=False,
+                          fec=fec, disp_page=1)
+        uio.set(loopback=1, jam_en=1, disp_sel=0)
+        await ClockCycles(dut.clk, 3)
+
+        byte_errs = bit_errs = fixes = flagged = 0
+        for value in payload:
+            await send_byte(dut, uio, value, nbits=frame_len(fec))
+            got = int(dut.uo_out.value)
+            byte_errs += got != value
+            bit_errs += bin(got ^ value).count("1")
+            if fec:
+                st = page1_fields(await read_status(dut, uio))
+                fixes += bin(st["fec_fix"]).count("1")
+                flagged += st["fec_err"]
+        results[fec] = (byte_errs, bit_errs, fixes, flagged)
+        dut._log.info(
+            "jam fine level %d (p=%.1f%%), FEC %s: %d/%d bytes wrong, "
+            "%d bit errors, %d codewords corrected, %d flagged uncorrectable",
+            level, 100 * JAM_THRESH[level] / 32, "on " if fec else "off",
+            byte_errs, len(payload), bit_errs, fixes, flagged)
+
+    plain, coded = results[False], results[True]
+    assert plain[0] >= 2, f"the plain link should break at this level: {plain}"
+    assert coded[2] >= 1, f"FEC should have corrected something: {coded}"
+    assert coded[0] * 2 <= plain[0], (
+        f"FEC should at least halve the byte error count: plain {plain}, fec {coded}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 16. Fully self-synchronising receiver: no epoch wire at all
+# ---------------------------------------------------------------------------
+
+@cocotb.test()
+async def test_framed_acquisition_no_epoch(dut):
+    """Chip phase from serial search, byte phase from the sync word.
+
+    The stream starts at a random chip offset partway into a frame, with no
+    epoch strobe at all.  Once locked and synced, every byte delivered must be
+    the right byte in the right order, with no rotation.  Before sync this
+    would deliver rotated bytes, which is exactly what framing fixes.
+    """
+    code_id = 23
+    payload = [0x11, 0x2E, 0x93, 0x4C, 0xD5, 0x6A, 0xF7, 0x08, 0xB9, 0x5D,
+               0xE2, 0x37, 0x84, 0xCB]
+    rng = random.Random(1129)
+    start_clock(dut)
+
+    for fec in (False, True):
+        nbits = frame_len(fec, True)
+        for _trial in range(2):
+            offset = rng.randrange(1, nbits * L)
+            uio = await reset(dut, tx_code=code_id, acq=True, fec=fec,
+                              framed=True)
+            uio.set(loopback=0, jam_en=0, disp_sel=0)
+            await ClockCycles(dut.clk, 3)
+
+            stream = []
+            for v in payload:
+                stream.extend(spread_frame(v, code_id, fec=fec, framed=True))
+            stream = stream[offset:]
+
+            seen = []
+
+            def watch(_i, uo, seen=seen):
+                if uo != 0 and (not seen or seen[-1] != uo):
+                    seen.append(uo)
+
+            await drive_chips(dut, uio, stream, epoch=False, watch=watch)
+            await ClockCycles(dut.clk, 6)
+
+            # Frames lost before the first delivery: the one cut by the
+            # offset, those that pass during a worst-case serial search
+            # (31 phases of 31 chips, plus two windows of confidence ramp),
+            # and the one in progress when lock is declared.
+            frame_chips = nbits * L
+            max_lost = 2 + -(-(33 * L) // frame_chips)
+            assert len(seen) >= len(payload) - max_lost, (
+                f"fec={fec} offset={offset}: only {len(seen)} bytes: "
+                f"{[hex(v) for v in seen]}"
+            )
+            start = payload.index(seen[0]) if seen[0] in payload else -1
+            assert start >= 0 and payload[start:start + len(seen)] == seen, (
+                f"fec={fec} offset={offset}: delivered {[hex(v) for v in seen]}"
+            )
+            dut._log.info("fec=%d, start offset %4d chips: first byte %d of %d, "
+                          "then %d in order", fec, offset, start + 1,
+                          len(payload), len(seen))
+
+
+# ---------------------------------------------------------------------------
+# 17. Sync word error tolerance
+# ---------------------------------------------------------------------------
+
+@cocotb.test()
+async def test_sync_word_tolerance(dut):
+    """One bit error in the sync word is tolerated, two lose the frame.
+
+    The receiver is compared against the model's FrameReceiver bit for bit,
+    including what it does with the payload of a frame whose sync it missed.
+    A clean frame afterwards must always get through.
+    """
+    code_id = 27
+    start_clock(dut)
+
+    for flips in ([], [3], [0, 5]):
+        uio = await reset(dut, tx_code=code_id, framed=True, disp_page=1)
+        uio.set(loopback=0, jam_en=0, disp_sel=0)
+        await ClockCycles(dut.clk, 3)
+
+        bits = _flip_bits(frame_bits(0x5A, framed=True), flips)
+        bits += frame_bits(0xC6, framed=True)
+        model = FrameReceiver(framed=True)
+        for b in bits:
+            model.push(b)
+
+        await drive_chips(dut, uio, spread_bits(bits, code_id))
+        await ClockCycles(dut.clk, 6)
+        st = page1_fields(await read_status(dut, uio))
+        got = int(dut.uo_out.value)
+
+        assert st["frames"] == len(model.out) % 4, (
+            f"sync errors {flips}: {st['frames']} frames, model {len(model.out)}"
+        )
+        assert got == model.out[-1][0] == 0xC6, f"last byte {got:#04x}"
+        if len(flips) <= 1:
+            assert len(model.out) == 2, "one sync error must be tolerated"
+        dut._log.info("sync word with %d bit error(s): %d of 2 frames delivered",
+                      len(flips), len(model.out))
+
+
+# ---------------------------------------------------------------------------
+# 18. Hop sequence
+# ---------------------------------------------------------------------------
+
+@cocotb.test()
+async def test_fhss_hop_sequence(dut):
+    """The displayed hop channel must follow the model, chip by chip."""
+    code_id = 21
+    start_clock(dut)
+
+    for fhss, fast in ((True, False), (True, True), (False, False)):
+        uio = await reset(dut, tx_code=code_id, fhss=fhss, hop_fast=fast,
+                          disp_page=2, page1=True)
+        uio.set(disp_sel=1)
+        await ClockCycles(dut.clk, 3)
+
+        dut.ui_in.value = 0x96
+        uio.set(tx_start=1)
+        await FallingEdge(dut.clk)
+        await FallingEdge(dut.clk)
+        uio.set(tx_start=0)
+        for _ in range(32):
+            await FallingEdge(dut.clk)
+            if tx_epoch(dut):
+                break
+        else:
+            raise AssertionError("tx_epoch_out never asserted")
+
+        chans = []
+        for i in range(8 * L):
+            if i:
+                await FallingEdge(dut.clk)
+            v = int(dut.uo_out.value)
+            assert v >> 7 == 1, "tx_busy must read 1 during the frame"
+            chans.append(v & 0x3F)
+        await ClockCycles(dut.clk, 4)
+        assert int(dut.uo_out.value) >> 7 == 0, "tx_busy must clear after"
+
+        expected = hop_channels(code_id, 8, fast=fast, fhss=fhss)
+        assert chans == expected, (
+            f"fhss={fhss} fast={fast}: hop mismatch at chip "
+            f"{next(i for i, (a, b) in enumerate(zip(chans, expected)) if a != b)}"
+        )
+        dut._log.info("fhss=%d fast=%d: %d distinct channels over one frame",
+                      fhss, fast, len(set(chans)))
+
+
+# ---------------------------------------------------------------------------
+# 19. Partial-band jammer against a fixed and a hopping transmitter
+# ---------------------------------------------------------------------------
+
+@cocotb.test()
+async def test_partial_band_jammer(dut):
+    """A narrowband jammer kills a parked link; hopping escapes it.
+
+    The jammer covers channels 1..7 at 50% chip flips, its strongest
+    setting.  A transmitter parked on channel 1 is under it all the time and
+    the link breaks.  Hopping once per chip, only about 7 of every 63 chips
+    are exposed, the effective flip rate falls to about 6%, and the 31-chip
+    majority vote absorbs it completely.  Hopping once per bit is in between:
+    whole bits land in the band and are lost, which is where FEC comes in.
+    """
+    code_id = 5
+    rng = random.Random(77)
+    payload = [rng.randrange(256) for _ in range(16)]
+    start_clock(dut)
+
+    # The hop sequence carries on across frames, so the exposure over the
+    # whole payload follows from the model.
+    expected_exposure = {}
+    for fast in (False, True):
+        for fec in (False, True):
+            chans = hop_channels(code_id, frame_len(fec) * len(payload),
+                                 fast=fast)
+            expected_exposure[fast, fec] = (
+                sum(in_band(c, 0) for c in chans) / len(chans))
+
+    results = {}
+    for label, fhss, fast, fec in (
+        ("parked", False, False, False),
+        ("hop/bit", True, False, False),
+        ("hop/bit + FEC", True, False, True),
+        ("hop/chip", True, True, False),
+    ):
+        uio = await reset(dut, tx_code=code_id, jam_level=3, acq=False,
+                          fhss=fhss, hop_fast=fast, pbj=True, pbj_band=0,
+                          fec=fec)
+        uio.set(loopback=1, jam_en=1, disp_sel=0)
+        await ClockCycles(dut.clk, 3)
+        bit_errs = byte_errs = 0
+        for value in payload:
+            await send_byte(dut, uio, value, nbits=frame_len(fec))
+            got = int(dut.uo_out.value)
+            bit_errs += bin(got ^ value).count("1")
+            byte_errs += got != value
+        results[label] = (bit_errs / (8 * len(payload)), byte_errs)
+        dut._log.info("%-14s BER %.3f, %2d/%d bytes wrong", label,
+                      results[label][0], byte_errs, len(payload))
+
+    dut._log.info("chips inside the jammed band: per-bit hop %.1f%%, "
+                  "per-bit hop with FEC %.1f%%, per-chip hop %.1f%%",
+                  100 * expected_exposure[False, False],
+                  100 * expected_exposure[False, True],
+                  100 * expected_exposure[True, False])
+    assert results["parked"][0] > 0.2, f"parked link should break: {results}"
+    assert expected_exposure[False, False] > 0, "slow hopping never met the jammer"
+    assert results["hop/chip"][1] == 0, f"fast hopping must be clean: {results}"
+    assert results["hop/bit"][0] < results["parked"][0], results
+    assert results["hop/bit + FEC"][1] <= results["hop/bit"][1], results

@@ -1,20 +1,28 @@
 # JAMGUARD, a DSSS anti-jam link core for Tiny Tapeout SKY 26e
 
-A direct sequence spread spectrum modem on a single 1×1 Tiny Tapeout
-tile: a Gold code spreader, a correlating despreader, and a built-in jammer so
-the anti-jam margin can be measured with no extra equipment.
+A direct sequence spread spectrum modem on a 1×2 Tiny Tapeout tile: a Gold
+code spreader, a correlating despreader that finds both chip and byte timing
+on its own, SECDED forward error correction, a frequency-hopping sequence, and
+a built-in jammer (broadband or partial-band) so the anti-jam margin can be
+measured with no extra equipment.
+
+Every feature beyond the basic link is a mode bit, off by default, so a plain
+reset still gives the original 1×1 behaviour.
 
 | | |
 |---|---|
 | Shuttle | Tiny Tapeout **SKY 26e** (sky130A), closes 2026-11-30 |
-| Area | **1×1 tile**, 161.00 × 111.52 µm |
-| Size | **110 flip-flops, 475 generic cells** (Yosys, technology independent) |
+| Area | **1×2 tile**, 161.00 × 225.76 µm, **37.7% utilised** |
+| Size | **168 flip-flops, 1486 standard cells** (post-layout) |
 | Top module | `tt_um_1marcb_jamguard` |
 | Clock | 10 MHz declared, hardened against a 20 ns period (50 MHz) for margin |
 | Code | length-31 Gold code, preferred pair `[5,2]` / `[5,4,3,2]` |
 | Processing gain | 10·log₁₀(31) = **14.9 dB** |
 | Jam tolerance | decodes through **15 of 31 corrupted chips (48%)** |
 | Foreign-code rejection | cross-correlation bounded at 9/31, lock needs 19/31 |
+| FEC | 2 × SECDED(8,4), bit-interleaved: corrects 1 error per codeword, any 2-bit burst |
+| Framing | sync word `0xE4` (Barker 7 + 0), 1 bit error tolerated |
+| Frequency hopping | 63 channels, per-bit or per-chip dwell, seeded from the code ID |
 
 See [docs/info.md](docs/info.md) for the datasheet and the bench demos.
 
@@ -48,6 +56,11 @@ is *preferred* (correlations confined to `{-9,-1,+7}`, meeting the bound
 `t(n) = 1 + 2^((n+1)/2) = 9`), that the 31 seeds give 31 distinct codes, that a
 31-chip majority vote survives exactly 15 errors, and that the lock threshold
 clears the worst **misaligned** correlation a free-running receiver can see.
+For the 1×2 features it also proves that the SECDED code has minimum distance
+4, corrects every single error and flags every double, that interleaving
+repairs every 2-bit burst, that a partly received sync word can never match,
+and that the jammer and hop LFSRs are maximal length. It finishes with the
+theoretical bit and byte error rate at every jam level, with and without FEC.
 
 Then the hardware is compared against that model, never against hand-written
 expected values:
@@ -58,11 +71,17 @@ python test/run_local.py           # same thing, no make needed (Windows)
 python test/run_local.py --gl      # against the hardened netlist
 ```
 
-Ten tests: reset state, the 248-chip transmit frame chip-for-chip, a
-256-byte loopback sweep, the exact jam cliff at J=15/16, foreign-code rejection
-both aligned and free-running, serial-search acquisition from a wrong phase,
-the four-tier jammer ladder, control inputs driven at random sub-cycle
-offsets, and the output drivers being tri-stated by `TX_PINS_OFF`.
+Nineteen tests. The original ten: reset state, the 248-chip transmit frame
+chip-for-chip, a 256-byte loopback sweep, the exact jam cliff at J=15/16,
+foreign-code rejection both aligned and free-running, serial-search
+acquisition from a wrong phase, the four-tier jammer ladder, control inputs
+driven at random sub-cycle offsets, and the output drivers being tri-stated by
+`TX_PINS_OFF`. Nine more for the 1×2 features: the configuration pages, every
+frame format chip-for-chip, loopback in every mode (all 256 bytes with FEC and
+framing), SECDED against injected single, double and burst errors, FEC
+against the on-chip jammer, a receiver with no epoch wire starting at random
+chip offsets, sync-word error tolerance, the hop sequence chip by chip, and
+the partial-band jammer against parked and hopping transmitters.
 
 ### Clock domain crossing audit
 
@@ -111,76 +130,71 @@ winget install --id Icarus.Verilog          # the simulator
 | check | result |
 |---|---|
 | Software model self-check (coding theory proved from scratch) | **pass** |
-| cocotb RTL simulation | **10/10** |
-| Verilator `--lint-only -Wall` | **0 warnings** |
-| **cocotb gate-level simulation** (post-PnR netlist + sky130 cells) | **10/10** |
-| LibreLane hardening | **pass**, 42.0% utilisation |
-| Static timing, all 9 corners | setup **+10.27 ns**, hold **+0.104 ns** |
-| Routing DRC / Magic DRC / antenna | **0 / 0 / 0** |
-| GDS + precheck + gl\_test in CI | pending first push |
-| iCE40UP5K build (Yosys + nextpnr) | **pass**, 199/5280 LCs, 34.9 MHz |
+| cocotb RTL simulation | **19/19** |
+| Verilator `--lint-only -Wall` | **0 warnings** (besides the template's file name) |
+| **cocotb gate-level simulation** (post-PnR netlist + sky130 cells) | **19/19** |
+| LibreLane hardening, 1×2 | **pass**, 37.7% utilisation |
+| Static timing, all 9 corners | setup **+6.77 ns**, hold **+0.105 ns** |
+| Routing DRC / Magic DRC / antenna / LVS | **0 / 0 / 0 / match** |
+| GDS + precheck + gl\_test in CI | pending push of the 1×2 build |
+| iCE40UP5K build (Yosys + nextpnr) | **pass**, 21.2 MHz, 2.1× the 10 MHz target |
 | FPGA on real hardware | pending a board |
 
-RTL and gate-level run the *same* ten tests with the *same* coverage,
-all 256 bytes, every jam level, both foreign-code cases. Gate level takes
-about 15 seconds.
+RTL and gate-level run the *same* nineteen tests with the *same* coverage.
+Gate level takes about 50 seconds.
 
-### Signoff, from the CI run that built the submitted GDS
+### Signoff, 1×2 build (local LibreLane 3.0.14, same version and PDK as CI)
 
 | check | result |
 |---|---|
-| **LVS (netgen)** | **circuits match uniquely** |
+| **LVS (netgen)** | **circuits match**, 0 errors |
 | Magic DRC | **0** errors |
 | detailed routing DRC | **0** errors |
-| antenna violations | **0** nets, **0** diodes needed |
+| antenna violations | **0** nets |
 | setup violations | **0** in all 9 corners |
 | hold violations | **0** in all 9 corners |
 | max capacitance violations | **0** |
-| max slew violations | **0** |
-| IR drop | **0.00%** (63.9 µV worst on 1.8 V) |
-| flow error log | **empty** |
+| max slew violations | **80**, slow-slow corners only, see below |
+| IR drop | 0.064 mV worst on 1.8 V |
 
-LVS matching uniquely is the line that matters most. It says the extracted
-layout and the synthesised netlist are the same circuit. A design can pass
-every simulation and still be wrong if the layout does not implement the
-netlist, and this is the check that rules that out.
+LVS matching is the line that matters most. It says the extracted layout and
+the synthesised netlist are the same circuit.
 
 ### Post-layout results
 
 | metric | value |
 |---|---|
-| sequential cells | 110 (identical to the synthesis count) |
-| standard cells | 794, of which 304 combinational |
-| fill / tap cells | 2722 / 225 (inert, filling the unused 58%) |
-| utilisation | 42.0% |
-| worst setup slack | +10.83 ns at a 20 ns period (slow corner) |
-| worst hold slack | +0.105 ns (fast corner) |
-| register to register slack | +13.08 ns, implying about 145 MHz internally |
-| clock to output, worst | 4.34 ns (`clk` pad to `uio_out[7]`) |
-| wirelength | 10 875 µm |
-| total power | 0.56 mW |
+| sequential cells | 168 |
+| standard cells | 1486, of which 566 combinational, 209 timing-repair buffers, 57 clock buffers |
+| utilisation | 37.7% of the 1×2 tile |
+| worst setup slack | +6.77 ns at a 20 ns period (max_ss_100C_1v60) |
+| worst hold slack | +0.105 ns (ff corners) |
+| wirelength | 22 773 µm |
+| total power | 1.26 mW |
 
-Three disconnected pins are reported, all intentional and all flagged by the
-tool as zero critical: `ena`, `uio_in[6]` and `uio_in[7]`, which are exactly
-the three signals in the `_unused` expression. Fourteen outputs are reported
-as having no diffusion driver, which is the six `uio_out` bits tied low plus
-the eight constant `uio_oe` bits. The cell report confirms it from the other
-side, listing exactly fourteen `conb_1` tie cells.
+### The max-slew violations, and why they are left alone
 
-One benign warning remains, deliberately not "fixed": a single max-fanout
-violation on `clkbuf_0_clk`, which is the clock-tree root buffer created by
-clock tree synthesis, not by the RTL. The reset net, which drives 86 of the
-110 flip-flops, is still the critical path, but with +10.83 ns of slack at a
-20 ns period and 90 ns at the declared 10 MHz there is nothing to gain by
-touching it.
+The 1×2 build reports 80 max-slew violations: 80 at `max_ss_100C_1v60`, 62 at
+`nom_ss`, 44 at `min_ss`, and **none** at any typical or fast corner. The worst
+is 1.03 ns against a 0.75 ns limit, on nets the resizer buffered with the weak
+`clkdlybuf4s25_1` cell. The taller tile has longer wires than the 1×1 build,
+and LibreLane's design repair only optimises for the typical corner.
 
-An earlier build also showed ten max-slew violations on that reset net, each
-0.008 ns over a 0.75 ns limit. They are gone in the current build. Being
-honest about why: they disappeared when the `TX_PINS_OFF` logic was added,
-and there is no mechanism by which that change should fix the reset tree.
-The netlist shifted slightly, placement and buffering re-ran, and this time
-the tree met the limit. That is a tool outcome that landed well, not a
-repair, and a future edit could bring them back.
+Why they are acceptable:
+
+- The 0.75 ns limit is LibreLane's conservative default. The sky130 standard
+  cells are characterised up to 1.5 ns, so 1.03 ns is still inside the
+  characterised tables and the timing numbers are not extrapolated.
+- Timing closes with +6.77 ns of setup slack at a 20 ns period in that same
+  corner, and the chip is declared at 10 MHz, a 100 ns period.
+- The worst net is `fec_en`, a configuration bit that only changes during
+  reset.
+- Tiny Tapeout's precheck does not check slew.
+
+Three flow-level fixes were tried and measured before settling on this: a 40%
+slew margin (80 → 62), excluding the `clkdlybuf4s` cells (80 → 145) and adding
+the slow corner to `PNR_CORNERS` (no change). None was clean, so
+`src/config.json` stays at the template defaults.
 
 ### Protection against output contention
 
@@ -200,11 +214,13 @@ window into existence.
 
 ## Remaining work
 
-- [x] `test`, `gds`, `precheck`, `gl_test`, `fpga`, `docs` and `viewer` all green in CI
+- [x] `test`, `gds`, `precheck`, `gl_test`, `fpga`, `docs` and `viewer` all green in CI (1×1 build)
+- [x] 1×2 features: FEC, sync-word framing, frequency hopping, partial-band jammer
+- [ ] Push the 1×2 build and confirm every workflow is green again
 - [ ] Load the bitstream on an iCE40 board and run the loopback + jammer demo
       (`tools/fpga_local.py` already builds it, and this is the step that
       exercises genuinely asynchronous inputs)
-- [ ] Submit in the Tiny Tapeout app, apply the IEEE CS coupon, resubmit final commit
+- [ ] Submit in the Tiny Tapeout app **as 1×2**, confirm the coupon covers two tiles, resubmit final commit
 - [ ] Optional: SymbiYosys formal properties
 
 ## Licence

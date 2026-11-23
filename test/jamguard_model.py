@@ -34,12 +34,21 @@ TAPS_B = (4, 3, 2, 1)    # x^5 + x^4 + x^3 + x^2 + 1
 LOCK_HI = 25
 LOCK_LO = 6
 
-# Jammer thresholds indexed by jam_level, flip probability is thresh/32.
-# Chosen so the four levels land in the four distinct regimes:
+# Jammer thresholds indexed by {jam_fine, jam_level}, flip probability is
+# thresh/32.  The coarse ladder (0..3) lands in the four distinct regimes:
 #   0,1 -> lock holds and data is clean
-#   2   -> lock is lost but the majority vote still decodes
+#   2   -> lock is lost but the majority vote still mostly decodes
 #   3   -> half the chips flip and the link breaks
-JAM_THRESH = (2, 4, 11, 16)
+# The fine ladder (4..7) is spaced across the decode cliff, where FEC matters.
+JAM_THRESH = (2, 4, 11, 16, 8, 9, 10, 12)
+
+# Frame sync word: 7-bit Barker 1110010 followed by a 0.
+SYNC = 0xE4
+
+# Frequency hopping
+HOP_TAPS = (5, 4)        # x^6 + x^5 + 1
+PARK_CH = 1              # channel a non-hopping transmitter sits on
+PBJ_BAND_TOP = (1, 2, 4, 6)   # jammed when channel[5:3] < this
 
 
 def _mseq(taps, seed, length):
@@ -188,36 +197,225 @@ def despread_byte(rx_chips, code_id):
 
 
 # ---------------------------------------------------------------------------
-# Jammer model (bit-exact with the RTL's 8-bit LFSR)
+# Jammer model (bit-exact with the RTL's 17-bit LFSR)
 # ---------------------------------------------------------------------------
 
 class Jammer:
-    """x^8 + x^6 + x^5 + x^4 + 1, reset state 0xA5, advanced every clock."""
+    """x^17 + x^14 + 1, reset state 0x1ACE1, advanced five steps per clock.
 
-    RESET = 0xA5
+    Five steps per clock means the five low bits compared against the
+    threshold are all fresh on every chip, so chip flips are independent
+    with probability thresh/32: a binary symmetric channel.
+    """
+
+    RESET = 0x1ACE1
+    BITS = 17
 
     def __init__(self, jam_level=0, enabled=True):
         self.state = self.RESET
         self.thresh = JAM_THRESH[jam_level]
         self.enabled = enabled
 
+    @staticmethod
+    def _step1(s):
+        fb = ((s >> 16) ^ (s >> 13)) & 1
+        return ((s << 1) | fb) & 0x1FFFF
+
+    @classmethod
+    def advance(cls, s):
+        for _ in range(5):
+            s = cls._step1(s)
+        return s
+
+    def draw(self):
+        """This clock's 5-bit uniform draw, then advance the state."""
+        v = self.state & 0x1F
+        self.state = self.advance(self.state)
+        return v
+
     def step(self):
         """Return this clock's flip decision, then advance the state."""
-        hit = self.enabled and (self.state & 0x1F) < self.thresh
-        fb = ((self.state >> 7) ^ (self.state >> 5) ^
-              (self.state >> 4) ^ (self.state >> 3)) & 1
-        self.state = ((self.state << 1) | fb) & 0xFF
-        return 1 if hit else 0
+        return 1 if (self.draw() < self.thresh and self.enabled) else 0
 
     @classmethod
     def period(cls):
-        s, start, n = cls.RESET, cls.RESET, 0
-        while True:
-            fb = ((s >> 7) ^ (s >> 5) ^ (s >> 4) ^ (s >> 3)) & 1
-            s = ((s << 1) | fb) & 0xFF
-            n += 1
-            if s == start:
-                return n
+        """Period of the underlying one-step LFSR (should be 2^17 - 1)."""
+        s, n = cls._step1(cls.RESET), 1
+        while s != cls.RESET:
+            s, n = cls._step1(s), n + 1
+        return n
+
+
+# ---------------------------------------------------------------------------
+# SECDED(8,4) extended Hamming code, bit-exact with the RTL
+# ---------------------------------------------------------------------------
+#
+# Codeword c[7:0] = {d3, d2, d1, d0, p2, p1, p0, q}
+
+def secded_enc(nibble):
+    d = [(nibble >> i) & 1 for i in range(4)]
+    p0 = d[0] ^ d[1] ^ d[3]
+    p1 = d[0] ^ d[2] ^ d[3]
+    p2 = d[1] ^ d[2] ^ d[3]
+    upper = (nibble << 4) | (p2 << 3) | (p1 << 2) | (p0 << 1)
+    q = bin(upper).count("1") & 1
+    return upper | q
+
+
+def secded_dec(c):
+    """Returns (data_nibble, corrected, uncorrectable), mirroring the RTL."""
+    b = [(c >> i) & 1 for i in range(8)]
+    syn = ((b[1] ^ b[4] ^ b[5] ^ b[7])
+           | (b[2] ^ b[4] ^ b[6] ^ b[7]) << 1
+           | (b[3] ^ b[5] ^ b[6] ^ b[7]) << 2)
+    q = bin(c).count("1") & 1
+    flip = 0
+    if q:
+        flip = {3: 0b0001, 5: 0b0010, 6: 0b0100, 7: 0b1000}.get(syn, 0)
+    return ((c >> 4) ^ flip) & 0xF, bool(q), bool(syn != 0 and not q)
+
+
+def interleave(h, l):
+    """16 bits, H on the odd positions and L on the even (bit 15 sent first)."""
+    v = 0
+    for i in range(8):
+        v |= ((h >> i) & 1) << (2 * i + 1)
+        v |= ((l >> i) & 1) << (2 * i)
+    return v
+
+
+def deinterleave(v):
+    h = l = 0
+    for i in range(8):
+        h |= ((v >> (2 * i + 1)) & 1) << i
+        l |= ((v >> (2 * i)) & 1) << i
+    return h, l
+
+
+def fec_encode_byte(byte_val):
+    """The 16-bit payload the transmitter sends for one byte with FEC on."""
+    return interleave(secded_enc(byte_val >> 4), secded_enc(byte_val & 0xF))
+
+
+def fec_decode_payload(v):
+    """Returns (byte, raw_byte, fix_bits, uncorrectable) like the RTL."""
+    h, l = deinterleave(v)
+    dh, fh, eh = secded_dec(h)
+    dl, fl, el = secded_dec(l)
+    return ((dh << 4) | dl, ((h >> 4) << 4) | (l >> 4),
+            (int(fh) << 1) | int(fl), eh or el)
+
+
+# ---------------------------------------------------------------------------
+# Frames
+# ---------------------------------------------------------------------------
+
+def frame_bits(byte_val, fec=False, framed=False):
+    """The bits of one frame, in transmission order."""
+    bits = []
+    if framed:
+        bits += [(SYNC >> (7 - i)) & 1 for i in range(8)]
+    if fec:
+        v = fec_encode_byte(byte_val)
+        bits += [(v >> (15 - i)) & 1 for i in range(16)]
+    else:
+        bits += [(byte_val >> (7 - i)) & 1 for i in range(8)]
+    return bits
+
+
+def spread_bits(bits, code_id):
+    chips = []
+    for b in bits:
+        chips.extend(spread_bit(b, code_id))
+    return chips
+
+
+def spread_frame(byte_val, code_id, fec=False, framed=False):
+    return spread_bits(frame_bits(byte_val, fec, framed), code_id)
+
+
+def despread_bits(rx_chips, code_id):
+    """Aligned hard decisions, one per 31-chip window."""
+    return [despread_window(rx_chips[i:i + L], code_id)[0]
+            for i in range(0, len(rx_chips) - L + 1, L)]
+
+
+def sync_hit(window8):
+    """Hamming distance <= 1 from SYNC, exactly as the RTL tests it."""
+    x = (window8 ^ SYNC) & 0xFF
+    return (x & (x - 1)) & 0xFF == 0
+
+
+class FrameReceiver:
+    """Bit-level model of the receiver's framing and FEC, fed decided bits."""
+
+    def __init__(self, fec=False, framed=False):
+        self.fec, self.framed = fec, framed
+        self.shift, self.cnt, self.inframe = 0, 0, False
+        self.out = []          # (byte, raw, fix, err) per delivered frame
+
+    def push(self, bit):
+        nxt = ((self.shift << 1) | bit) & 0xFFFF
+        last = 15 if self.fec else 7
+        if self.framed and not self.inframe:
+            if sync_hit(nxt & 0xFF):
+                self.inframe, self.cnt = True, 0
+            else:
+                self.shift = nxt
+        elif self.cnt == last:
+            if self.fec:
+                self.out.append(fec_decode_payload(nxt))
+            else:
+                self.out.append((nxt & 0xFF, nxt & 0xFF, 0, False))
+            self.cnt, self.inframe, self.shift = 0, False, 0
+        else:
+            self.shift, self.cnt = nxt, self.cnt + 1
+
+
+# ---------------------------------------------------------------------------
+# Frequency hopping
+# ---------------------------------------------------------------------------
+
+def hop_step(s):
+    fb = 0
+    for t in HOP_TAPS:
+        fb ^= (s >> t) & 1
+    return ((s << 1) | fb) & 0x3F
+
+
+def hop_seed(code_id):
+    if code_id == 0:
+        code_id = 1
+    return ((code_id << 1) | 1) & 0x3F
+
+
+def hop_channels(code_id, n_bits, fast=False, fhss=True):
+    """Channel of every chip of the first n_bits bits sent after reset.
+
+    The hop state is seeded at reset and carries on across frames, so this
+    covers any number of back-to-back frames too.
+    """
+    if not fhss:
+        return [PARK_CH] * (n_bits * L)
+    s, out = hop_seed(code_id), []
+    for _ in range(n_bits):
+        for k in range(L):
+            out.append(s)
+            if fast or k == L - 1:
+                s = hop_step(s)
+    return out
+
+
+def hop_period():
+    s0 = hop_seed(1)
+    s, n = hop_step(s0), 1
+    while s != s0:
+        s, n = hop_step(s), n + 1
+    return n
+
+
+def in_band(channel, band):
+    return (channel >> 3) < PBJ_BAND_TOP[band]
 
 
 # ---------------------------------------------------------------------------
@@ -300,9 +498,54 @@ def _self_check(verbose=True):
           worst_mis < lock_R,
           f"  (worst misaligned |R| = {worst_mis}, lock needs |R| >= {lock_R})")
 
-    check("jammer LFSR is maximal length", Jammer.period() == 255,
-          f"  (period {Jammer.period()})")
-    check("jam pattern never aligns with the code", math.gcd(255, L) == 1)
+    jp = Jammer.period()
+    check("jammer LFSR is maximal length", jp == 2 ** 17 - 1,
+          f"  (period {jp})")
+    check("jam pattern never aligns with the code", math.gcd(jp, L) == 1)
+
+    # --- SECDED(8,4) ------------------------------------------------------
+    cws = [secded_enc(n) for n in range(16)]
+    dmin = min(bin(a ^ b).count("1")
+               for i, a in enumerate(cws) for b in cws[i + 1:])
+    check("SECDED minimum distance is 4", dmin == 4, f"  (d_min = {dmin})")
+    single_ok = all(secded_dec(c ^ (1 << k))[0] == n and
+                    secded_dec(c ^ (1 << k))[1] and
+                    not secded_dec(c ^ (1 << k))[2]
+                    for n, c in enumerate(cws) for k in range(8))
+    check("SECDED corrects every single-bit error", single_ok)
+    double_ok = all(secded_dec(c ^ (1 << j) ^ (1 << k))[2]
+                    for c in cws for j in range(8) for k in range(j + 1, 8))
+    check("SECDED flags every double-bit error", double_ok)
+    clean_ok = all(secded_dec(c) == (n, False, False)
+                   for n, c in enumerate(cws))
+    check("SECDED passes clean codewords untouched", clean_ok)
+    burst_ok = all(
+        fec_decode_payload(fec_encode_byte(v) ^ (0b11 << k))[0] == v
+        for v in range(256) for k in range(15))
+    check("interleaving corrects every 2-bit burst", burst_ok)
+
+    # --- frame sync word ---------------------------------------------------
+    # After a frame the receiver clears its shift register to zero.  While
+    # the next sync word is only partly received, the 8-bit window still
+    # holds some of those zeros, and it must never be within distance 1 of
+    # SYNC.  Neither may any shift of SYNC against its neighbours in a
+    # stream of back-to-back frames.
+    partial_ok = all(not sync_hit((SYNC >> (8 - k)) & 0xFF)
+                     for k in range(1, 8))
+    check("a partly received sync word never matches", partial_ok)
+    stream_ok = True
+    for fec in (False, True):
+        for v in range(256):
+            rx = FrameReceiver(fec=fec, framed=True)
+            for _ in range(3):
+                for b in frame_bits(v, fec=fec, framed=True):
+                    rx.push(b)
+            stream_ok &= [o[0] for o in rx.out] == [v] * 3
+    check("framed receiver recovers every byte from a stream", stream_ok)
+
+    # --- frequency hopping -------------------------------------------------
+    hp = hop_period()
+    check("hop LFSR is maximal length", hp == 63, f"  (period {hp})")
 
     if verbose:
         print("-" * 64)
@@ -317,19 +560,18 @@ def _self_check(verbose=True):
         print(f"  worst impostor |R|     = {worst}/{L}")
         print("-" * 64)
 
-        print("\n  jam_level   P(flip)   E[flips]/31   expected M   outcome")
+        print("\n  level  P(flip)  P(lockable)  raw BER   byte err  "
+              "byte err w/ FEC")
         for lvl, thr in enumerate(JAM_THRESH):
             p = thr / 32
-            ej = p * L
-            em = L - ej
-            if em >= LOCK_HI:
-                outcome = "locks and decodes"
-            elif em >= 16:
-                outcome = "decodes, loses lock"
-            else:
-                outcome = "breaks down"
-            print(f"      {lvl}      {p:6.1%}      {ej:5.1f}       "
-                  f"{em:5.1f}      {outcome}")
+            ber = sum(math.comb(L, j) * p ** j * (1 - p) ** (L - j)
+                      for j in range(16, L + 1))
+            lockable = sum(math.comb(L, j) * p ** j * (1 - p) ** (L - j)
+                           for j in range(0, LOCK_LO + 1))
+            cw_fail = 1 - ((1 - ber) ** 8 + 8 * ber * (1 - ber) ** 7)
+            print(f"  {lvl}{' fine' if lvl >= 4 else '     '}  {p:6.1%}  "
+                  f"{lockable:9.1%}   {ber:8.2e}  {1 - (1 - ber) ** 8:8.2e}  "
+                  f"{max(0.0, 1 - (1 - cw_fail) ** 2):8.2e}")
         print()
         print("RESULT:", "ALL CHECKS PASSED" if ok else "FAILURES PRESENT")
 
