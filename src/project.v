@@ -173,9 +173,31 @@ module tt_um_1marcb_jamguard (
   reg [7:0] mode;    // page 1, from ui_in
   reg [2:0] mode2;   // page 1, from uio_in[2:0]
 
+  // cfg_armed exists to stop a reset that only ever selects page 1 from
+  // leaving page 0 undefined.
+  //
+  // mode and mode2 are safe without help because both branches below write
+  // them, so one reset clock defines them. cfg_a and cfg_b are written only
+  // in the page 0 branch and have no reset of their own, and uio_in[5] is
+  // DISP_SEL in run mode, so an operator sitting on a status page who presses
+  // reset never executes that branch. Every register in the hardened netlist
+  // is a plain dfxtp_2 with no reset pin, which makes reset entirely
+  // synchronous and that power up state genuinely undefined, not merely
+  // unspecified in simulation.
+  //
+  // cfg_armed is cleared throughout every run, so it is 0 entering any reset
+  // and the page 0 branch is forced until page 0 has actually been presented.
+  // With uio_in[5] low the condition is true either way, so the documented
+  // page 0 then page 1 sequence behaves exactly as before.
+  reg cfg_armed;
+  always @(posedge clk) begin
+    if (rst_n)           cfg_armed <= 1'b0;
+    else if (!uio_in[5]) cfg_armed <= 1'b1;
+  end
+
   always @(posedge clk) begin
     if (!rst_n) begin
-      if (!uio_in[5]) begin
+      if (!uio_in[5] || !cfg_armed) begin
         cfg_a <= ui_in;
         cfg_b <= uio_in[4:0];
         mode  <= 8'h00;

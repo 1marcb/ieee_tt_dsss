@@ -125,8 +125,8 @@ def cross_correlate(c1, c2, shift):
     return sum(x[k] * y[(k + shift) % L] for k in range(L))
 
 
-def worst_misaligned_correlation(tx_ids=None, rx_ids=None, data_vals=None):
-    """Worst |R| a free-running receiver can see from a foreign transmitter.
+def worst_misaligned_correlation(same_code=False):
+    """Worst |R| a free-running receiver can see, searched exhaustively.
 
     The classic Gold bound of t(n) = 9 applies only to windows aligned with a
     code period.  A receiver that has not yet acquired slides its window
@@ -134,24 +134,45 @@ def worst_misaligned_correlation(tx_ids=None, rx_ids=None, data_vals=None):
     sums of two *partial* correlations and the bound does not cover them --
     they reach |R| = 17, which is why the lock threshold is set at 19 rather
     than at something just above 9.
-    """
-    tx_ids = tx_ids or range(1, L + 1, 3)
-    rx_ids = rx_ids or range(1, L + 1, 3)
-    data_vals = data_vals or (0x00, 0xA5, 0x5A, 0xC3, 0x6B, 0xF0)
 
+    Any such window is completely determined by the transmit code, the
+    receive code, the chip offset and the two adjacent data bits, because the
+    first L-o chips carry one bit and the rest carry the next.  That makes
+    the whole space only L*L*L*4 windows, so this enumerates every one of
+    them instead of sampling.  An earlier version sampled a third of the
+    codes and six of the 256 data values, and skipped same_code entirely.
+
+    same_code=False searches every ordered pair of different codes.
+    same_code=True searches each code against itself at every wrong phase,
+    which is the case acquisition actually has to survive: once locked, the
+    slip search stops, so a false lock at the wrong phase of the right code
+    would never self correct.
+    """
+    codes = {c: gold_code(c) for c in range(1, L + 1)}
     worst = 0
-    for tx_id in tx_ids:
+    locking = 0
+    for tx_id in range(1, L + 1):
+        gtx = codes[tx_id]
+        rx_ids = [tx_id] if same_code else [r for r in range(1, L + 1)
+                                            if r != tx_id]
+        offsets = range(1, L) if same_code else range(L)
         for rx_id in rx_ids:
-            if rx_id == tx_id:
-                continue
-            rxcode = gold_code(rx_id)
-            for data in data_vals:
-                stream = spread_byte(data, tx_id) * 2
-                for off in range(8 * L):
-                    win = stream[off:off + L]
-                    m = sum(1 for a, b in zip(win, rxcode) if a == b)
-                    worst = max(worst, abs(2 * m - L))
-    return worst
+            grx = codes[rx_id]
+            for off in offsets:
+                for b0 in (0, 1):
+                    for b1 in (0, 1):
+                        m = 0
+                        for k in range(L):
+                            idx = off + k
+                            bit = b0 if idx < L else b1
+                            if (gtx[idx % L] ^ bit) == grx[k]:
+                                m += 1
+                        if m >= LOCK_HI or m <= LOCK_LO:
+                            locking += 1
+                        r = abs(2 * m - L)
+                        if r > worst:
+                            worst = r
+    return worst, locking
 
 
 # ---------------------------------------------------------------------------
@@ -491,12 +512,22 @@ def _self_check(verbose=True):
           f"  (first failure at {first_fail} of {L} chips)")
 
     # The acquisition threshold must clear the *misaligned* worst case too,
-    # not merely the aligned Gold bound.
-    worst_mis = worst_misaligned_correlation()
+    # not merely the aligned Gold bound.  Both searches below are exhaustive.
     lock_R = L - 2 * LOCK_LO
+    worst_mis, lock_mis = worst_misaligned_correlation(same_code=False)
     check("lock threshold clears misaligned foreign windows",
-          worst_mis < lock_R,
-          f"  (worst misaligned |R| = {worst_mis}, lock needs |R| >= {lock_R})")
+          worst_mis < lock_R and lock_mis == 0,
+          f"  (worst |R| = {worst_mis}, {lock_mis} would lock, "
+          f"lock needs |R| >= {lock_R})")
+
+    # The case acquisition really depends on: the right code at the wrong
+    # phase.  Once locked the slip search stops, so a false lock here would
+    # deliver wrong bytes forever with no self recovery.
+    worst_self, lock_self = worst_misaligned_correlation(same_code=True)
+    check("lock threshold clears the right code at a wrong phase",
+          worst_self < lock_R and lock_self == 0,
+          f"  (worst |R| = {worst_self}, {lock_self} would lock, "
+          f"lock needs |R| >= {lock_R})")
 
     jp = Jammer.period()
     check("jammer LFSR is maximal length", jp == 2 ** 17 - 1,

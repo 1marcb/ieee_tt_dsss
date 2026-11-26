@@ -1145,3 +1145,110 @@ async def test_partial_band_jammer(dut):
     assert results["hop/chip"][1] == 0, f"fast hopping must be clean: {results}"
     assert results["hop/bit"][0] < results["parked"][0], results
     assert results["hop/bit + FEC"][1] <= results["hop/bit"][1], results
+
+
+# ---------------------------------------------------------------------------
+# 20. A reset that only ever selects page 1
+# ---------------------------------------------------------------------------
+
+@cocotb.test()
+async def test_reset_page1_only(dut):
+    """A page-1-only reset must still leave the part fully defined.
+
+    uio_in[5] is the page select during reset and DISP_SEL in run mode. An
+    operator looking at a status page has it high, so pressing reset never
+    executes the page 0 branch. cfg_a and cfg_b are written only in that
+    branch and have no reset of their own.
+
+    This is not theoretical. Every one of the 168 registers in the hardened
+    netlist is a plain dfxtp_2 with no reset pin, so reset is entirely
+    synchronous and the power up state really is undefined. If page 0 never
+    loads, the code id, the jammer level and acq_en are whatever the silicon
+    came up as, and that propagates into the code generators.
+    """
+    start_clock(dut)
+    dut.ena.value = 1
+    dut.rst_n.value = 0
+    dut.ui_in.value = 0x55
+    dut.uio_in.value = 1 << 5          # page 1 selected for the whole reset
+    await ClockCycles(dut.clk, 6)
+    await FallingEdge(dut.clk)
+    dut.rst_n.value = 1
+    dut.ui_in.value = 0
+    dut.uio_in.value = 0
+    await ClockCycles(dut.clk, 4)
+    await FallingEdge(dut.clk)
+
+    uio = Uio(dut)
+    uio.set(loopback=1, jam_en=0, disp_sel=0)
+    await ClockCycles(dut.clk, 3)
+    await send_byte(dut, uio, 0xA5)
+
+    def undefined(sig, name):
+        s = str(sig.value).lower()
+        bad = [c for c in s if c not in "01"]
+        assert not bad, f"{name} is not fully defined after a page-1-only reset: {s}"
+
+    undefined(dut.uo_out, "uo_out")
+    undefined(dut.uio_out, "uio_out")
+    undefined(dut.uio_oe, "uio_oe")
+    dut._log.info("page-1-only reset leaves every output defined")
+
+
+# ---------------------------------------------------------------------------
+# 21. Streaming transmit, tx_start held high
+# ---------------------------------------------------------------------------
+
+@cocotb.test()
+async def test_tx_streaming(dut):
+    """Holding tx_start high must emit frames back to back.
+
+    The header and the datasheet both document this, and demo 6 tells the
+    operator to use it, but every other test releases tx_start a couple of
+    clocks after asserting it and therefore never reaches the reload branch
+    at the end of a frame. That line was dead code in simulation.
+
+    Streaming plus framing is also the only configuration that puts two sync
+    words on the air back to back, which the software model covers and
+    nothing in RTL did.
+    """
+    code_id = 9
+    data = 0x3C
+    nframes = 3
+    start_clock(dut)
+
+    for fec, framed in ((False, True), (True, True)):
+        uio = await reset(dut, tx_code=code_id, fec=fec, framed=framed)
+        nbits = frame_len(fec, framed)
+
+        dut.ui_in.value = data
+        uio.set(tx_start=1)                 # held high for the whole run
+        for _ in range(32):
+            await FallingEdge(dut.clk)
+            if tx_epoch(dut):
+                break
+        else:
+            raise AssertionError("tx_epoch_out never asserted")
+
+        total = nframes * nbits * L
+        chips, epochs = [tx_chip(dut)], [0]
+        for i in range(1, total):
+            await FallingEdge(dut.clk)
+            chips.append(tx_chip(dut))
+            if tx_epoch(dut):
+                epochs.append(i)
+        uio.set(tx_start=0)
+
+        one = spread_frame(data, code_id, fec=fec, framed=framed)
+        expected = one * nframes
+        assert chips == expected, (
+            f"fec={fec}: streaming chip mismatch at "
+            f"{next(i for i, (a, b) in enumerate(zip(chips, expected)) if a != b)}"
+            f" of {total}"
+        )
+        # Epochs must stay on the grid with no gap between frames.
+        assert epochs == [i * L for i in range(nframes * nbits)], (
+            f"fec={fec}: epoch grid broke at frame boundary: {epochs[:40]}"
+        )
+        dut._log.info("fec=%d: %d frames streamed back to back, %d chips, "
+                      "epoch grid unbroken", fec, nframes, total)

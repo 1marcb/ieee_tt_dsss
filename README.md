@@ -12,8 +12,8 @@ reset still gives the original 1×1 behaviour.
 | | |
 |---|---|
 | Shuttle | Tiny Tapeout **SKY 26e** (sky130A), closes 2026-11-30 |
-| Area | **1×2 tile**, 161.00 × 225.76 µm, **37.7% utilised** |
-| Size | **168 flip-flops, 1486 standard cells** (post-layout) |
+| Area | **1×2 tile**, 161.00 × 225.76 µm, **38.5% utilised** |
+| Size | **169 flip-flops, 1529 standard cells** (post-layout) |
 | Top module | `tt_um_1marcb_jamguard` |
 | Clock | 10 MHz declared, hardened against a 20 ns period (50 MHz) for margin |
 | Code | length-31 Gold code, preferred pair `[5,2]` / `[5,4,3,2]` |
@@ -130,17 +130,17 @@ winget install --id Icarus.Verilog          # the simulator
 | check | result |
 |---|---|
 | Software model self-check (coding theory proved from scratch) | **pass** |
-| cocotb RTL simulation | **19/19** |
+| cocotb RTL simulation | **21/21** |
 | Verilator `--lint-only -Wall` | **0 warnings** (besides the template's file name) |
-| **cocotb gate-level simulation** (post-PnR netlist + sky130 cells) | **19/19** |
-| LibreLane hardening, 1×2 | **pass**, 37.7% utilisation |
-| Static timing, all 9 corners | setup **+6.77 ns**, hold **+0.105 ns** |
+| **cocotb gate-level simulation** (post-PnR netlist + sky130 cells) | **21/21** |
+| LibreLane hardening, 1×2 | **pass**, 38.5% utilisation |
+| Static timing, all 9 corners | setup **+5.45 ns**, hold **+0.105 ns** |
 | Routing DRC / Magic DRC / antenna / LVS | **0 / 0 / 0 / match** |
 | GDS + precheck + gl\_test + viewer in CI | **all green on the 1×2 build** |
 | iCE40UP5K build (Yosys + nextpnr) | **pass**, 21.2 MHz, 2.1× the 10 MHz target |
 | FPGA on real hardware | pending a board |
 
-RTL and gate-level run the *same* nineteen tests with the *same* coverage.
+RTL and gate-level run the *same* twenty-one tests with the *same* coverage.
 Gate level takes about 50 seconds.
 
 ### Signoff, 1×2 build (local LibreLane 3.0.14, same version and PDK as CI)
@@ -154,7 +154,7 @@ Gate level takes about 50 seconds.
 | setup violations | **0** in all 9 corners |
 | hold violations | **0** in all 9 corners |
 | max capacitance violations | **0** |
-| max slew violations | **80**, slow-slow corners only, see below |
+| max slew violations | **149**, worst 0.949 ns, slow-slow corners only, see below |
 | IR drop | 0.064 mV worst on 1.8 V |
 
 LVS matching is the line that matters most. It says the extracted layout and
@@ -164,13 +164,61 @@ the synthesised netlist are the same circuit.
 
 | metric | value |
 |---|---|
-| sequential cells | 168 |
+| sequential cells | 169 |
 | standard cells | 1486, of which 566 combinational, 209 timing-repair buffers, 57 clock buffers |
-| utilisation | 37.7% of the 1×2 tile |
-| worst setup slack | +6.77 ns at a 20 ns period (max_ss_100C_1v60) |
+| utilisation | 38.5% of the 1×2 tile |
+| worst setup slack | +5.45 ns at a 20 ns period (max_ss_100C_1v60) |
 | worst hold slack | +0.105 ns (ff corners) |
 | wirelength | 22 773 µm |
 | total power | 1.26 mW |
+
+### A reset that only selects page 1 left the configuration undefined
+
+Found by an independent review of the RTL and fixed. `mode` and `mode2` are
+safe without help because both branches of the configuration capture write
+them, so one reset clock defines them. `cfg_a` and `cfg_b` were written only
+in the page 0 branch and have no reset of their own.
+
+That branch is skipped whenever `uio_in[5]` is high during reset, and
+`uio_in[5]` is `DISP_SEL` in run mode. An operator looking at a status page
+has it high, so pressing reset never loaded page 0. The code id, the jammer
+level and `acq_en` then held whatever the silicon powered up as.
+
+This is not a simulation artefact. Every one of the registers in the
+hardened netlist is a plain `dfxtp_2` with **no reset pin**, so reset is
+entirely synchronous and the power up state really is undefined. The
+reproduction is in `test_reset_page1_only`, which failed on the old RTL with
+`uio_out` reading `0x000000`, bit 6 being the X on the chip stream pin.
+
+The fix is one flip-flop. `cfg_armed` is cleared throughout every run, so it
+is 0 entering any reset and forces the page 0 branch until page 0 has
+actually been presented. With `uio_in[5]` low the condition is true either
+way, so the documented page 0 then page 1 sequence is unchanged. The test
+now passes at RTL and, more to the point, at gate level.
+
+### The lock threshold is now proven exhaustively
+
+The model's misaligned-correlation search used to sample a third of the
+codes and six of the 256 data values, and it skipped the case where the
+receive code equals the transmit code. That omission mattered: a false lock
+at a wrong phase of the **right** code is the one failure the design cannot
+recover from, because once `locked` asserts the slip search stops.
+
+A misaligned window is fully determined by the two code ids, the chip offset
+and the two adjacent data bits, so the whole space is only 115320 windows
+for foreign codes and 3720 for the same code. Both are now enumerated
+exhaustively in the model self-check. Worst case is |R| = 17 in each, against
+a lock threshold of 19, and **zero** windows out of either set would lock.
+
+### Streaming transmit is now covered
+
+Holding `TX_START` high to send frames back to back is documented in the
+header and used by demo 6, but every test released it a couple of clocks
+after asserting, so the reload branch at the end of a frame was dead code in
+simulation. `test_tx_streaming` holds it high for three consecutive frames
+with framing on, with and without FEC, and checks every chip against the
+model and that the epoch grid never breaks across a frame boundary. It is
+also the only test that puts two sync words on the air back to back.
 
 ### The max-slew violations, and why they are left alone
 
@@ -185,7 +233,7 @@ Why they are acceptable:
 - The 0.75 ns limit is LibreLane's conservative default. The sky130 standard
   cells are characterised up to 1.5 ns, so 1.03 ns is still inside the
   characterised tables and the timing numbers are not extrapolated.
-- Timing closes with +6.77 ns of setup slack at a 20 ns period in that same
+- Timing closes with +5.45 ns of setup slack at a 20 ns period in that same
   corner, and the chip is declared at 10 MHz, a 100 ns period.
 - The worst net is `fec_en`, a configuration bit that only changes during
   reset.
