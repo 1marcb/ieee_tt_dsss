@@ -152,7 +152,7 @@ def read_info_yaml() -> dict:
         return yaml.safe_load(fh)["project"]
 
 
-def build_merged_config() -> dict:
+def build_merged_config(tiles_override=None) -> dict:
     """Reproduce src/config_merged.json exactly as tt_tool.py would.
 
     tt_tool.py builds src/user_config.json from info.yaml plus a per-PDK tile
@@ -163,7 +163,7 @@ def build_merged_config() -> dict:
     import yaml
 
     info = read_info_yaml()
-    tiles = info["tiles"]
+    tiles = tiles_override or info["tiles"]
 
     with open(TOOLS_CACHE / "tech" / PDK / "tile_sizes.yaml",
               encoding="utf-8") as fh:
@@ -340,6 +340,9 @@ def main() -> int:
                     help="start the container and exec a shell in it")
     ap.add_argument("--keep-work", action="store_true",
                     help="reuse the existing work volume instead of wiping it")
+    ap.add_argument("--tiles", default=None,
+                    help="override info.yaml tiles, for trying a different "
+                         "die size without editing the repo")
     ap.add_argument("--report-only", action="store_true",
                     help="re-print the report from the last run's artifacts")
     args = ap.parse_args()
@@ -359,7 +362,7 @@ def main() -> int:
 
     ensure_pdk()
     ensure_tools()
-    config = build_merged_config()
+    config = build_merged_config(args.tiles)
 
     start_container(fresh_work=not args.keep_work)
     copy_in(config)

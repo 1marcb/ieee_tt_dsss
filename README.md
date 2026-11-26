@@ -136,7 +136,7 @@ winget install --id Icarus.Verilog          # the simulator
 | LibreLane hardening, 1×2 | **pass**, 37.7% utilisation |
 | Static timing, all 9 corners | setup **+6.77 ns**, hold **+0.105 ns** |
 | Routing DRC / Magic DRC / antenna / LVS | **0 / 0 / 0 / match** |
-| GDS + precheck + gl\_test in CI | pending push of the 1×2 build |
+| GDS + precheck + gl\_test + viewer in CI | **all green on the 1×2 build** |
 | iCE40UP5K build (Yosys + nextpnr) | **pass**, 21.2 MHz, 2.1× the 10 MHz target |
 | FPGA on real hardware | pending a board |
 
@@ -216,7 +216,7 @@ window into existence.
 
 - [x] `test`, `gds`, `precheck`, `gl_test`, `fpga`, `docs` and `viewer` all green in CI (1×1 build)
 - [x] 1×2 features: FEC, sync-word framing, frequency hopping, partial-band jammer
-- [ ] Push the 1×2 build and confirm every workflow is green again
+- [x] Push the 1×2 build and confirm every workflow is green again
 - [ ] Load the bitstream on an iCE40 board and run the loopback + jammer demo
       (`tools/fpga_local.py` already builds it, and this is the step that
       exercises genuinely asynchronous inputs)
