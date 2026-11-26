@@ -147,7 +147,7 @@ you, can follow it.
 
 What makes it measurable is the **partial-band jammer** (`PBJ_EN = 1`): the
 on-chip jammer then only corrupts chips sent on channels inside its band
-(`PBJ_BAND`: channels 1–7, 1–15, 1–31 or 1–47). With hopping off the
+(`PBJ_BAND`: channels 1 to 7, 1 to 15, 1 to 31 or 1 to 47). With hopping off the
 transmitter parks on channel 1, inside every band, which models a jammer that
 has found a fixed-frequency link. Simulation at the strongest level (50%
 flips) and the narrowest band, over 16 random bytes:
@@ -215,7 +215,7 @@ always gives the basic DSSS link with every extra feature off.
 | `ui_in[6:5]` | `DISP_PAGE` | status page shown when `DISP_SEL = 1` |
 | `ui_in[7]` | `TX_PINS_OFF` | 1 = tri-state `uio[7:6]`, see demo 7 |
 | `uio_in[0]` | `HOP_FAST` | 0 = hop per bit, 1 = hop per chip |
-| `uio_in[2:1]` | `PBJ_BAND` | jammed channels 1–7, 1–15, 1–31, 1–47 |
+| `uio_in[2:1]` | `PBJ_BAND` | jammed channels 1 to 7, 1 to 15, 1 to 31, 1 to 47 |
 
 The transmitter and the receiver of a link must agree on `FEC_EN` and
 `FRAME_EN`.
@@ -237,7 +237,7 @@ The transmitter and the receiver of a link must agree on `FEC_EN` and
 
 ### Status pages
 
-| `DISP_PAGE` | bit 7 | bit 6 | bit 5 | bit 4 | bits 3–2 | bits 1–0 |
+| `DISP_PAGE` | bit 7 | bit 6 | bit 5 | bit 4 | bits 3 and 2 | bits 1 and 0 |
 |---|---|---|---|---|---|---|
 | 0 | VALID | LOCKED | HUNTING | CORR[4] | CORR[3:2] | CORR[1:0] |
 | 1 | VALID | LOCKED | IN_FRAME | FEC_ERR | FEC_FIX[1:0] | FRAMES[1:0] |

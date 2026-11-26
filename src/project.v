@@ -335,7 +335,7 @@ module tt_um_1marcb_jamguard (
   reg [5:0]  tx_hop;         // hop state for the current chip
 
   // The payload is loaded already encoded, so the shift-out logic is the same
-  // with and without FEC; only the frame length differs.
+  // with and without FEC, and only the frame length differs.
   wire [15:0] tx_load = fec_en
       ? interleave(secded_enc(ui_in[7:4]), secded_enc(ui_in[3:0]))
       : {ui_in, 8'h00};
