@@ -261,6 +261,55 @@ LVS matching uniquely is the line that matters most. It says the extracted
 layout and the synthesised netlist are the same circuit, with no ambiguity in
 the correspondence.
 
+### The shuttle's own build agrees with the local one, exactly
+
+The submitted artifact is built by CI from the committed source, on its
+machines, and those are the only numbers that finally count. So the CI run was
+downloaded and compared against the local hardening:
+
+| metric | local run | shuttle build |
+|---|---|---|
+| worst setup slack, ns | 0.4661462459 | 0.4661462459 |
+| worst hold slack, ns | 0.1099710909 | 0.1099710909 |
+| standard cells | 2666 | 2666 |
+| flip-flops | 352 | 352 |
+| utilisation | 0.752612 | 0.752612 |
+| wirelength, µm | 48 943.4 | 48 943.4 |
+| total power, W | 0.0017719979 | 0.0017719979 |
+| worst IR drop, V | 7.82176e-5 | 7.82176e-5 |
+| hold endpoints repaired | 252 | 252 |
+| hold buffers inserted | 275 | 275 |
+
+Identical to every digit either side reports. The source files differ only in
+line endings, because one checkout is on Windows and the other is not.
+
+That is worth establishing rather than assuming, for two reasons. It means
+every number quoted in this README is the number being fabricated. And more
+generally, a local flow is a model of the real one, and a model never checked
+against what it models is a liability dressed as a convenience: it agrees with
+reality until it quietly stops, and the model will not tell you. Checking once
+costs a download and settles whether local runs can be trusted to make
+decisions on. Here they can, which is what justified measuring the four timing
+experiments below locally rather than waiting on CI for each.
+
+It also strengthens the determinism noted further down. The flow is not merely
+repeatable on one machine with one seed, but across machines and operating
+systems, which is what makes a measured difference attributable to the change
+that caused it.
+
+From the build that produced the submitted layout:
+
+- Magic DRC **0**, full ruleset
+- LVS **circuits match uniquely**, zero unmatched devices, nets or pins, zero property failures
+- detailed routing DRC **0**, converged over five iterations from an initial 634
+- antenna violations **0**, no diodes required
+- setup and hold positive in all nine corners, zero total negative slack for both
+- power grid violations **0** on both supplies
+- disconnected pins **3, none critical**: `ena` and the two input paths of the pins this design drives as outputs
+- gate-level simulation **31 of 31** against that netlist
+- LEF reports `SIZE 161.000 BY 225.760` and `CLASS BLOCK`, the 1×2 tile exactly
+- the GDS is a structurally valid GDSII with the expected top cell
+
 ### Setup slack across all nine corners
 
 | corner | setup slack (ns) | slew violations |
