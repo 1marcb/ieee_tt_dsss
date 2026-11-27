@@ -38,7 +38,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
+import tarfile
 import subprocess
 import sys
 from pathlib import Path
@@ -281,6 +283,94 @@ def copy_out() -> None:
     print(f"[out] artifacts in {OUT_DIR}")
 
 
+def density_gate() -> None:
+    """Warn when the design is heading for a detailed-placement failure.
+
+    This exists because a 1x2 revision of this project died at
+    OpenROAD.ResizerTimingPostCTS with "[DPL-0036] Detailed placement
+    failed", nine stages after the flow already knew.  What goes wrong is not
+    setup timing and not logic area.  The post-CTS resizer always inflates
+    the design by about 12 percent, because PL_RESIZER_HOLD_SLACK_MARGIN asks
+    it to build 100 ps of hold margin and it does so with eight-site
+    sky130_fd_sc_hd__dlygate4sd3_1 delay cells, one for roughly every
+    three quarters of a flip-flop.  If the post-CTS design is already dense,
+    there is nowhere to legalise them, and the run dies after about twenty
+    minutes of work.
+
+    Global placement prints three numbers that predict this outcome.  The
+    failing run and the passing run differed sharply on all three, so these
+    thresholds are measured rather than guessed:
+
+        GPL-1004 minimum feasible density     0.86 failed, 0.71 passed
+        GPL-1007 suggested density for 90%    1.07 failed, 0.79 passed
+        GPL-1012 routability inflation       11.4% failed,  0.4% passed
+
+    A GPL-1007 value above 1.0 is arithmetically unplaceable and is the
+    clearest single signal of the three.
+
+    The useful size rule that falls out of it: a flip-flop in this design
+    really costs about 31 square microns placed, not the 21 its library cell
+    occupies, once its share of hold buffer and clock buffer is counted.  So
+    a 1x2 tile holds roughly 360 flip-flops, and that is the budget to design
+    against.
+    """
+    # The stage logs ship inside reports.tgz, so read the one we need
+    # straight out of the archive rather than unpacking a thousand files.
+    text = ""
+    tgz = OUT_DIR / "reports.tgz"
+    if tgz.exists():
+        try:
+            with tarfile.open(tgz) as tf:
+                for name in tf.getnames():
+                    if ("28-openroad-globalplacement" in name
+                            and name.endswith(".log")):
+                        fh = tf.extractfile(name)
+                        if fh is not None:
+                            text = fh.read().decode("utf-8", "replace")
+                        break
+        except (tarfile.TarError, OSError):
+            return
+    if not text:
+        return
+
+    checks = []
+    for tag, pattern, limit, label in (
+        ("GPL-1004", r"Minimum Feasible Density[: ]+([0-9.]+)", 0.75,
+         "minimum feasible density"),
+        ("GPL-1007", r"For 90% usage of free space:\s*([0-9.]+)", 1.00,
+         "density needed for 90% free space"),
+        ("GPL-0019", r"Utilization:\s*([0-9.]+)\s*%", 75.0,
+         "global placement utilization, percent"),
+    ):
+        hit = re.search(pattern, text)
+        if hit:
+            val = float(hit.group(1))
+            checks.append((val > limit, f"{label} {val:.3f} "
+                                        f"(stay under {limit:.2f})"))
+
+    hit = re.search(r"artificial inflation:[^(]*\(\+?([0-9.]+)%\)", text)
+    if hit:
+        val = float(hit.group(1))
+        checks.append((val > 2.0, f"routability inflation {val:.2f}% "
+                                  "(stay under 2%)"))
+
+    bad = [msg for over, msg in checks if over]
+    if not bad:
+        if checks:
+            print("\n  placement headroom looks healthy: "
+                  + ", ".join(msg for _, msg in checks))
+        return
+
+    print("\n  PLACEMENT HEADROOM WARNING")
+    for msg in bad:
+        print(f"    {msg}")
+    print("    The post-CTS resizer inflates this design by about 12 percent\n"
+          "    to build hold margin, and at this density it may not be able\n"
+          "    to legalise the delay cells it needs.  Shrink the design.\n"
+          "    Flip-flops are the lever: one costs about 31 square microns\n"
+          "    placed, so a 1x2 tile holds roughly 360 of them.")
+
+
 def report() -> None:
     metrics_path = OUT_DIR / "final" / "metrics.json"
     if not metrics_path.exists():
@@ -319,14 +409,13 @@ def report() -> None:
     if util is not None:
         print(f"\n  utilization is {util * 100:.1f}% of the tile "
               f"({cells} cells).")
-        if util > 0.6:
-            print("  NOTE: over the 60% target density; if placement or "
-                  "routing failed, shrink the design rather than raising "
-                  "PL_TARGET_DENSITY_PCT.")
+
     ws = m.get("timing__setup__ws")
     if ws is not None and ws < 0:
         print(f"\n  NEGATIVE SETUP SLACK ({ws:.3f} ns): raise CLOCK_PERIOD in "
               "src/config.json rather than redesigning.")
+
+    density_gate()
     print("=" * 62)
     print("\nNext:  python test/run_local.py --gl   (gate-level simulation)")
 

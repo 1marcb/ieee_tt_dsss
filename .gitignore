@@ -31,3 +31,4 @@ textbook/
 
 # uploaded tool log archives, kept locally
 *.zip
+tools/__pycache__/

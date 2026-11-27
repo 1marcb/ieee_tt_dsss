@@ -3,7 +3,7 @@ project:
   title:        "JAMGUARD DSSS Anti-Jam Link"
   author:       "Marc Boudames"
   discord:      ""
-  description:  "Gold-code DSSS modem with self-synchronising receiver, SECDED FEC, frequency hopping and a built-in jammer, 14.9 dB processing gain"
+  description:  "Gold-code DSSS modem, 31 or 127 chips for 14.9 or 21.0 dB processing gain, self-acquiring and phase-tracking receiver, SECDED FEC, frequency hopping, four jammer kinds and a built-in bit error rate tester"
   language:     "Verilog"
   clock_hz:     10000000
 
@@ -19,21 +19,21 @@ project:
   source_files:
     - "project.v"
 
-# The pinout of your project. Leave unused pins blank. DO NOT delete or add any pins.
+# The pinout of your project. Leave unused pins blank. DO NOT delete any pins.
 # This section is for the datasheet/website. Use descriptive names (e.g., RX, TX, MOSI, SCL, SEG_A, etc.).
 pinout:
   # Inputs
-  ui[0]: "TX_DATA0 / cfg0 CODE_ID0 / cfg1 FEC_EN"
-  ui[1]: "TX_DATA1 / cfg0 CODE_ID1 / cfg1 FRAME_EN"
-  ui[2]: "TX_DATA2 / cfg0 CODE_ID2 / cfg1 FHSS_EN"
-  ui[3]: "TX_DATA3 / cfg0 CODE_ID3 / cfg1 PBJ_EN"
-  ui[4]: "TX_DATA4 / cfg0 CODE_ID4 / cfg1 JAM_FINE"
-  ui[5]: "TX_DATA5 / cfg0 JAM_LVL0 / cfg1 DISP_PAGE0"
-  ui[6]: "TX_DATA6 / cfg0 JAM_LVL1 / cfg1 DISP_PAGE1"
-  ui[7]: "TX_DATA7 / cfg0 ACQ_EN / cfg1 TX_PINS_OFF"
+  ui[0]: "TX_DATA0 / p0 CODE_ID0 / p1 FEC_EN / p2 TX_CODE_HI0 / p3 JAM_KIND0"
+  ui[1]: "TX_DATA1 / p0 CODE_ID1 / p1 FRAME_EN / p2 TX_CODE_HI1 / p3 JAM_KIND1"
+  ui[2]: "TX_DATA2 / p0 CODE_ID2 / p1 FHSS_EN / p2 RX_CODE_HI0 / p3 FOL_DELAY0"
+  ui[3]: "TX_DATA3 / p0 CODE_ID3 / p1 PBJ_EN / p2 RX_CODE_HI1 / p3 FOL_DELAY1"
+  ui[4]: "TX_DATA4 / p0 CODE_ID4 / p1 JAM_FINE / p2 LEN127"
+  ui[5]: "TX_DATA5 / p0 JAM_LVL0 / p1 DISP_PAGE0 / p2 TRK_EN / p3 PULSE_DUTY0"
+  ui[6]: "TX_DATA6 / p0 JAM_LVL1 / p1 DISP_PAGE1 / p2 PRBS_EN / p3 PULSE_DUTY1"
+  ui[7]: "TX_DATA7 / p0 ACQ_EN / p1 TX_PINS_OFF / p2 RX_POP_EN / p3 DISP_PAGE3"
 
   # Outputs
-  uo[0]: "RX_DATA0 / status (see datasheet pages)"
+  uo[0]: "RX_DATA0 / status (16 pages, see datasheet)"
   uo[1]: "RX_DATA1 / status"
   uo[2]: "RX_DATA2 / status"
   uo[3]: "RX_DATA3 / status"
@@ -43,12 +43,12 @@ pinout:
   uo[7]: "RX_DATA7 / status VALID or TX_BUSY"
 
   # Bidirectional pins
-  uio[0]: "TX_START (in) / cfg0 RX_CODE0 / cfg1 HOP_FAST"
-  uio[1]: "RX_CHIP (in) / cfg0 RX_CODE1 / cfg1 PBJ_BAND0"
-  uio[2]: "RX_EPOCH (in) / cfg0 RX_CODE2 / cfg1 PBJ_BAND1"
-  uio[3]: "LOOPBACK_EN (in) / cfg0 RX_CODE3"
-  uio[4]: "JAM_EN (in) / cfg0 RX_CODE4"
-  uio[5]: "DISP_SEL (in) / cfg PAGE_SEL"
+  uio[0]: "TX_START or RX_POP (in) / p0 RX_CODE0 / p1 HOP_FAST"
+  uio[1]: "RX_CHIP (in) / p0 RX_CODE1 / p1 PBJ_BAND0"
+  uio[2]: "RX_EPOCH (in) / p0 RX_CODE2 / p1 PBJ_BAND1 / p2 DISP_PAGE2"
+  uio[3]: "LOOPBACK_EN (in) / p0 RX_CODE3 / cfg PAGE_SEL0"
+  uio[4]: "JAM_EN (in) / p0 RX_CODE4 / cfg PAGE_SEL1"
+  uio[5]: "DISP_SEL (in) / cfg PAGE_GROUP"
   uio[6]: "TX_CHIP (out)"
   uio[7]: "TX_EPOCH (out)"
 

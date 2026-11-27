@@ -1,30 +1,72 @@
 # JAMGUARD, a DSSS anti-jam link core for Tiny Tapeout SKY 26e
 
-A direct sequence spread spectrum modem on a 1×2 Tiny Tapeout tile: a Gold
-code spreader, a correlating despreader that finds both chip and byte timing
-on its own, SECDED forward error correction, a frequency-hopping sequence, and
-a built-in jammer (broadband or partial-band) so the anti-jam margin can be
-measured with no extra equipment.
+A direct sequence spread spectrum modem with its own test equipment built in,
+on a 1×2 Tiny Tapeout tile. It spreads each data bit over a Gold code of 31 or
+127 chips, despreads it with three parallel correlators so it can find and
+then *hold* the chip phase on its own, finds byte boundaries from a sync word,
+corrects single-bit errors, hops across 63 channels, and carries four kinds of
+on-chip jammer so the anti-jam margin can be measured on a bench with no
+instruments at all.
 
 Every feature beyond the basic link is a mode bit, off by default, so a plain
-reset still gives the original 1×1 behaviour.
+reset still gives the original behaviour.
 
 | | |
 |---|---|
 | Shuttle | Tiny Tapeout **SKY 26e** (sky130A), closes 2026-11-30 |
-| Area | **1×2 tile**, 161.00 × 225.76 µm, **38.5% utilised** |
-| Size | **169 flip-flops, 1529 standard cells** (post-layout) |
+| Area | **1×2 tile**, 161.00 × 225.76 µm, **73.8% utilised** |
+| Size | **352 flip-flops, 2620 standard cells** (post-layout) |
 | Top module | `tt_um_1marcb_jamguard` |
 | Clock | 10 MHz declared, hardened against a 20 ns period (50 MHz) for margin |
-| Code | length-31 Gold code, preferred pair `[5,2]` / `[5,4,3,2]` |
-| Processing gain | 10·log₁₀(31) = **14.9 dB** |
-| Jam tolerance | decodes through **15 of 31 corrupted chips (48%)** |
-| Foreign-code rejection | cross-correlation bounded at 9/31, lock needs 19/31 |
+| Codes | 31 chips from a degree-5 preferred pair, or 127 from a degree-7 pair |
+| Processing gain | 10·log₁₀(31) = **14.91 dB**, or 10·log₁₀(127) = **21.04 dB** |
+| Jam tolerance, decode | **15 of 31 chips (48.4%)**, or **63 of 127 (49.6%)** |
+| Jam tolerance, lock | 6 of 31 (19.4%), or **39 of 127 (30.7%)** |
+| Foreign-code rejection | bounded at 9/31 and 17/127, both bounds attained |
+| Code tracking | early/late correlators, one chip of correction per window |
 | FEC | 2 × SECDED(8,4), bit-interleaved: corrects 1 error per codeword, any 2-bit burst |
 | Framing | sync word `0xE4` (Barker 7 + 0), 1 bit error tolerated |
 | Frequency hopping | 63 channels, per-bit or per-chip dwell, seeded from the code ID |
+| Jammer | broadband, pulsed, periodic and follower, any of them band-limited |
+| Measurement | PRBS-9 bit error rate tester, mean correlation magnitude, foreign-code peak |
 
 See [docs/info.md](docs/info.md) for the datasheet and the bench demos.
+
+## What makes this more than a spreader and a correlator
+
+Three things in the receiver are worth singling out, because they are what
+turn a demonstration into something usable.
+
+**It tracks the chip phase, not just acquires it.** Two boards with their own
+crystals drift apart. At 100 parts per million the chip phase slips once every
+10 000 chips, which at 31 chips per bit is one slip every 40 bytes, and a slip
+costs the receiver its lock. The receiver therefore runs three correlators over
+every window: on time, one chip advanced, and one chip retarded. If a
+neighbour would have locked when the on-time correlator did not, the next
+window is lengthened or shortened by one chip, which pulls the phase back
+inside a single code period.
+
+That matters asymmetrically. The serial search can only ever *retard* the
+local phase, so a slip in the advancing direction takes up to L−1 further
+slips to walk the long way round. Measured on the hardware with one chip
+dropped every four frames, delivery goes from 5 of 16 bytes to 11 of 16 once
+tracking is on.
+
+**It measures its own link.** A PRBS-9 generator feeds the transmitter and a
+self-synchronising checker on the receive side counts prediction failures
+against a 16-bit byte counter, so a bit error rate is a reading rather than an
+estimate. A fourth correlator runs a *different* code of the same family over
+the same windows and holds the peak it sees, which turns the cross-correlation
+bound from a claim into a measurement. And the mean correlation magnitude over
+256 windows is the link margin, readable on eight pins by eye.
+
+**It defeats the matched attack, measurably.** The follower jammer replays the
+chip stream back after a selectable delay, which is a jammer using the
+victim's own code. It gains nothing, because a Gold code correlated against a
+shifted copy of itself gives at most t(n), never the code length. On the
+hardware that is 0 bit errors in 32 at replay delays of 1 and 4 chips, and in
+the model the worst replay correlation is 17 of 127 against a lock threshold
+of 49.
 
 ## Repository layout
 
@@ -38,7 +80,7 @@ test/test.py               cocotb suite, runs on RTL and on the netlist
 test/tb.v, test/Makefile   the template harness CI uses
 test/run_local.py          run the suite without GNU make (Windows)
 tools/harden_local.py      run the LibreLane hardening locally, in Docker
-tools/synth_stat.ys        quick Yosys cell/flip-flop count
+tools/synth_stat.ys        quick Yosys cell/flip-flop estimate
 tools/fpga_local.py        iCE40UP5K build via Yosys + nextpnr (WASM, no install)
 ```
 
@@ -51,16 +93,33 @@ independently of the hardware:
 python test/jamguard_model.py
 ```
 
-This proves, from scratch, that both polynomials are primitive, that the pair
-is *preferred* (correlations confined to `{-9,-1,+7}`, meeting the bound
-`t(n) = 1 + 2^((n+1)/2) = 9`), that the 31 seeds give 31 distinct codes, that a
-31-chip majority vote survives exactly 15 errors, and that the lock threshold
-clears the worst **misaligned** correlation a free-running receiver can see.
-For the 1×2 features it also proves that the SECDED code has minimum distance
-4, corrects every single error and flags every double, that interleaving
-repairs every 2-bit burst, that a partly received sync word can never match,
-and that the jammer and hop LFSRs are maximal length. It finishes with the
-theoretical bit and byte error rate at every jam level, with and without FEC.
+It takes about two minutes and proves, from scratch and for **both** code
+families, that all four polynomials are primitive, that each pair is
+*preferred* with its correlations confined to three values meeting the bound
+`t(n) = 1 + 2^((n+1)/2)` exactly, that the L seeds give L distinct codes, that
+a majority vote over L chips survives exactly (L-1)/2 errors, and that the
+lock threshold clears the worst **misaligned** correlation a free-running
+receiver can see.
+
+It also proves the pieces the hardware's cheaper tricks depend on: that the
+subtractor-free magnitude fold `(m[hb] ? m : ~m) & (half-1)` equals the
+arithmetic distance from the midpoint for every reachable match count, that
+`|R| = 2·magn + 1`, that the chip-phase discriminator points toward alignment
+at every offset, and that a replayed chip stream cannot reach the lock
+threshold, which is why the follower jammer fails.
+
+For the coding and framing it proves that SECDED has minimum distance 4,
+corrects every single error and flags every double, that interleaving repairs
+every 2-bit burst, that a partly received sync word can never match, that the
+jammer and hop LFSRs are maximal length, that five steps per clock really do
+decorrelate consecutive jammer draws, that the periodic jammer matches the
+broadband one's average density, that PRBS-9 has period 511, and that one
+injected bit error produces exactly three prediction failures, which is the
+calibration the bit error rate readout depends on. It finishes with the
+theoretical bit error rate at every jam level for both code lengths.
+
+Pass `--quick` to skip the exhaustive misaligned-window searches, which
+dominate the runtime at L = 127.
 
 Then the hardware is compared against that model, never against hand-written
 expected values:
@@ -71,17 +130,36 @@ python test/run_local.py           # same thing, no make needed (Windows)
 python test/run_local.py --gl      # against the hardened netlist
 ```
 
-Nineteen tests. The original ten: reset state, the 248-chip transmit frame
+Thirty tests, every one of which also runs against the hardened netlist.
+
+The first ten cover the basic link: reset state, the 248-chip transmit frame
 chip-for-chip, a 256-byte loopback sweep, the exact jam cliff at J=15/16,
 foreign-code rejection both aligned and free-running, serial-search
 acquisition from a wrong phase, the four-tier jammer ladder, control inputs
 driven at random sub-cycle offsets, and the output drivers being tri-stated by
-`TX_PINS_OFF`. Nine more for the 1×2 features: the configuration pages, every
+`TX_PINS_OFF`.
+
+Eleven more cover coding, framing and hopping: the configuration pages, every
 frame format chip-for-chip, loopback in every mode (all 256 bytes with FEC and
-framing), SECDED against injected single, double and burst errors, FEC
-against the on-chip jammer, a receiver with no epoch wire starting at random
-chip offsets, sync-word error tolerance, the hop sequence chip by chip, and
-the partial-band jammer against parked and hopping transmitters.
+framing), SECDED against injected single, double and burst errors, FEC against
+the on-chip jammer, a receiver with no epoch wire starting at random chip
+offsets, sync-word error tolerance, the hop sequence chip by chip, the
+partial-band jammer against parked and hopping transmitters, a page-1-only
+reset, and three frames streamed back to back.
+
+The last nine cover the long codes and the instrumentation:
+
+| test | what it pins down |
+|---|---|
+| `test_long_code_chip_sequence` | 1016 chips of a 127-chip frame against the degree-7 model. Loopback cannot catch a wrong tap, because both sides would use it |
+| `test_long_code_loopback` | both lengths through the *same* jammer: 10 bit errors in 256 at L=31, **0** at L=127 |
+| `test_long_code_lock_band` | at 34.4% of chips flipped, L=127 decodes perfectly while correctly refusing to claim lock |
+| `test_long_code_rejects_foreign` | no false lock over 3048 chips of a foreign long code |
+| `test_chip_phase_tracking` | one chip dropped every four frames: 5 of 16 bytes without tracking, **11 of 16** with |
+| `test_cross_correlation_monitor` | the monitor reads magnitude **0**, exactly the -1 zero-shift cross-correlation, and never false locks |
+| `test_prbs_bert` | the PRBS-9 sequence bit-exact, and the error counter equal to the model's own checker |
+| `test_rx_buffer` | depth, ordering and the overflow flag, without assuming which byte arrives first |
+| `test_jammer_kinds` | all four kinds against the model, and the follower causing **0** bit errors |
 
 ### Clock domain crossing audit
 
@@ -90,8 +168,8 @@ synchroniser. Three places sample an input pin directly instead:
 
 | site | signal | why it is acceptable |
 |---|---|---|
-| `cfg_a <= ui_in` | configuration | loaded only while `rst_n` is low, from switches a human sets beforehand |
-| `cfg_b <= uio_in[5:0]` | configuration | same |
+| `cfg_a`, `cfg2a`, `cfg3a` `<= ui_in` | configuration | loaded only while `rst_n` is low, from switches a human sets beforehand |
+| `cfg_b`, `cfg2b`, `cfg3b` `<= uio_in[4:0]` | configuration | same |
 | `tx_shift <= ui_in` | transmit data | the data byte, static during a frame by construction |
 
 The distinction that matters is that none of those feed a state machine. They
@@ -101,7 +179,8 @@ asynchronous signal reconverges on two paths and a state machine sees it two
 different ways, cannot occur here because every control input is
 synchronised. Adding synchronisers to `ui_in` would cost 16 flip-flops and
 would not remove the underlying race, which is inherent to sampling a
-mechanical switch.
+mechanical switch. On a tile where a flip-flop really costs 31 µm² placed,
+that is 500 µm² spent on something that does not fix the problem.
 
 ## Local hardening
 
@@ -129,142 +208,232 @@ winget install --id Icarus.Verilog          # the simulator
 
 | check | result |
 |---|---|
-| Software model self-check (coding theory proved from scratch) | **pass** |
-| cocotb RTL simulation | **21/21** |
+| Software model self-check (coding theory proved from scratch, both families) | **pass** |
+| cocotb RTL simulation | **30/30** |
 | Verilator `--lint-only -Wall` | **0 warnings** (besides the template's file name) |
-| **cocotb gate-level simulation** (post-PnR netlist + sky130 cells) | **21/21** |
-| LibreLane hardening, 1×2 | **pass**, 38.5% utilisation |
-| Static timing, all 9 corners | setup **+5.45 ns**, hold **+0.105 ns** |
-| Routing DRC / Magic DRC / antenna / LVS | **0 / 0 / 0 / match** |
-| GDS + precheck + gl\_test + viewer in CI | **all green on the 1×2 build** |
-| iCE40UP5K build (Yosys + nextpnr) | **pass**, 21.2 MHz, 2.1× the 10 MHz target |
+| **cocotb gate-level simulation** (post-PnR netlist + sky130 cells) | **30/30** |
+| LibreLane hardening, 1×2 | **pass**, 73.8% utilisation |
+| Static timing, all 9 corners | setup **+2.06 ns**, hold **+0.105 ns**, 0 violations |
+| Routing DRC / Magic DRC / antenna / LVS | **0 / 0 / 0 / match uniquely** |
+| iCE40UP5K build (Yosys + nextpnr) | **pass** |
 | FPGA on real hardware | pending a board |
 
-RTL and gate-level run the *same* twenty-one tests with the *same* coverage.
-Gate level takes about 50 seconds.
+RTL and gate level run the *same* thirty tests with the *same* coverage, which
+is the point: a test that only runs at RTL cannot tell you whether the thing
+being fabricated works.
 
 ### Signoff, 1×2 build (local LibreLane 3.0.14, same version and PDK as CI)
 
 | check | result |
 |---|---|
-| **LVS (netgen)** | **circuits match**, 0 errors |
-| Magic DRC | **0** errors |
-| detailed routing DRC | **0** errors |
-| antenna violations | **0** nets |
+| **LVS (netgen)** | **circuits match uniquely**, 2222 devices and 2248 nets on both sides, 0 errors |
+| Magic DRC | **0** errors, full ruleset |
+| detailed routing DRC | **0** errors, converged over 5 iterations |
+| illegal overlap | **0** |
+| antenna violations | **0** nets, **0** diodes inserted |
 | setup violations | **0** in all 9 corners |
 | hold violations | **0** in all 9 corners |
 | max capacitance violations | **0** |
-| max slew violations | **149**, worst 0.949 ns, slow-slow corners only, see below |
-| IR drop | 0.064 mV worst on 1.8 V |
+| max fanout violations | 18, not gated by the flow |
+| max slew violations | **286**, slow-slow corners only, see below |
+| IR drop | 0.084 mV worst on 1.8 V |
 
-LVS matching is the line that matters most. It says the extracted layout and
-the synthesised netlist are the same circuit.
+LVS matching uniquely is the line that matters most. It says the extracted
+layout and the synthesised netlist are the same circuit, with no ambiguity in
+the correspondence.
+
+### Setup slack across all nine corners
+
+| corner | setup slack (ns) |
+|---|---|
+| max_ss_100C_1v60 | **+2.06** |
+| nom_ss_100C_1v60 | +2.23 |
+| min_ss_100C_1v60 | +2.38 |
+| max_tt_025C_1v80 | +11.06 |
+| nom_tt_025C_1v80 | +11.16 |
+| min_tt_025C_1v80 | +11.24 |
+| max_ff_n40C_1v95 | +12.74 |
+| nom_ff_n40C_1v95 | +12.82 |
+| min_ff_n40C_1v95 | +12.89 |
+
+The spread is almost entirely process and supply, not wire extraction: the
+slow-slow corner at 1.60 V is 9 ns worse than typical at 1.80 V, while the
+pessimistic and optimistic RC extractions of the *same* corner differ by only
+0.3 ns. That is the useful lesson about which corner to design against.
 
 ### Post-layout results
 
 | metric | value |
 |---|---|
-| sequential cells | 169 |
-| standard cells | 1486, of which 566 combinational, 209 timing-repair buffers, 57 clock buffers |
-| utilisation | 38.5% of the 1×2 tile |
-| worst setup slack | +5.45 ns at a 20 ns period (max_ss_100C_1v60) |
+| sequential cells | 352 |
+| standard cells | 2620: 1315 combinational, 381 timing-repair buffers, 52 clock buffers, 54 inverters, 456 taps |
+| physical-only cells | 2902 fill and decap |
+| utilisation | 73.8% of the 1×2 tile |
+| worst setup slack | +2.06 ns at a 20 ns period (max_ss_100C_1v60) |
 | worst hold slack | +0.105 ns (ff corners) |
-| wirelength | 22 773 µm |
-| total power | 1.26 mW |
+| wirelength | 51 481 µm |
+| total power | 1.77 mW |
 
-### A reset that only selects page 1 left the configuration undefined
+### Two flip-flops bought 1.98 ns of setup slack
 
-Found by an independent review of the RTL and fixed. `mode` and `mode2` are
-safe without help because both branches of the configuration capture write
-them, so one reset clock defines them. `cfg_a` and `cfg_b` were written only
-in the page 0 branch and have no reset of their own.
+The first successful 1×2 hardening of the expanded design closed with only
+**+0.083 ns** of setup slack. The worst path, read off
+`55-openroad-stapostpnr/max_ss_100C_1v60/max.rpt`, ran:
 
-That branch is skipped whenever `uio_in[5]` is high during reset, and
-`uio_in[5]` is `DISP_SEL` in run mode. An operator looking at a status page
-has it high, so pressing reset never loaded page 0. The code id, the jammer
-level and `acq_en` then held whatever the silicon powered up as.
+```
+frame_en (a config flop) -> tx_data_bit -> tx_chip -> loopback mux
+  -> jammer XOR -> rx_chip -> match -> 7-bit accumulator add
+  -> magnitude fold -> threshold comparator -> receiver control flop
+```
 
-This is not a simulation artefact. Every one of the registers in the
-hardened netlist is a plain `dfxtp_2` with **no reset pin**, so reset is
-entirely synchronous and the power up state really is undefined. The
-reproduction is in `test_reset_page1_only`, which failed on the old RTL with
-`uio_out` reading `0x000000`, bit 6 being the X on the chip stream pin.
+In loopback mode the *entire transmitter* and the *entire receiver* were in
+one combinational path, because `tx_chip` is combinational out of the
+transmitter's state and the loopback mux fed it straight into the correlator.
+Fed from the real pin instead, the receiver starts from a synchroniser output,
+so the transmitter half of that path does not exist.
 
-The fix is one flip-flop. `cfg_armed` is cleared throughout every run, so it
-is 0 entering any reset and forces the page 0 branch until page 0 has
-actually been presented. With `uio_in[5]` low the condition is true either
-way, so the documented page 0 then page 1 sequence is unchanged. The test
-now passes at RTL and, more to the point, at gate level.
+Registering the loopback tap makes loopback behave like the pin it is
+pretending to be. Cost: two flip-flops, for `tx_chip_q` and `tx_epoch_q`,
+delayed by the same single cycle so their alignment is untouched. Setup slack
+went from +0.083 ns to **+2.059 ns**, and wirelength fell from 52 730 µm to
+51 481 µm as a side effect. The flop count went from 350 to 352, which is the
+cleanest possible confirmation that nothing else changed.
 
-### The lock threshold is now proven exhaustively
+### The density limit is hold buffers, not logic
 
-The model's misaligned-correlation search used to sample a third of the
-codes and six of the 256 data values, and it skipped the case where the
-receive code equals the transmit code. That omission mattered: a false lock
-at a wrong phase of the **right** code is the one failure the design cannot
-recover from, because once `locked` asserts the slip search stops.
+An earlier, larger version of this design failed at
+`OpenROAD.ResizerTimingPostCTS` with `[DPL-0036] Detailed placement failed`,
+twenty minutes into the run. The cause is not what it looks like.
 
-A misaligned window is fully determined by the two code ids, the chip offset
-and the two adjacent data bits, so the whole space is only 115320 windows
-for foreign codes and 3720 for the same code. Both are now enumerated
-exhaustively in the model self-check. Worst case is |R| = 17 in each, against
-a lock threshold of 19, and **zero** windows out of either set would lock.
+Both the failing and the passing runs report `[RSZ-0098] No setup violations
+found`. The area was consumed entirely by **hold** fixing. The post-CTS
+resizer found 239 endpoints with hold violations and inserted **263
+`dlygate4sd3_1` delay cells**, each 8 sites wide, to fix a real violation of
+about 11 ps. It does that because `PL_RESIZER_HOLD_SLACK_MARGIN = 0.1` asks
+it to build 100 ps of margin, and the final hold slack lands at exactly
+0.1000 ns, which proves every picosecond was manufactured and none was spare.
 
-### Streaming transmit is now covered
+The scaling is stable across both runs and is the useful design rule:
 
-Holding `TX_START` high to send frames back to back is documented in the
-header and used by demo 6, but every test released it a couple of clocks
-after asserting, so the reload branch at the end of a frame was dead code in
-simulation. `test_tx_streaming` holds it high for three consecutive frames
-with framing on, with and without FEC, and checks every chip against the
-model and that the epoch grid never breaks across a frame boundary. It is
-also the only test that puts two sync words on the air back to back.
+| quantity | measured |
+|---|---|
+| hold-violating endpoints | ≈ 0.68 × flip-flop count |
+| hold buffers inserted | ≈ 0.75 × flip-flop count |
+| hold-buffer area | ≈ 7.5 µm² per flip-flop |
+| clock-buffer area | ≈ 2.1 µm² per flip-flop |
+| `dfxtp_2` library area | 21.3 µm² |
+| **true placed cost of one flip-flop** | **≈ 31 µm²** |
+
+So a flip-flop costs 45% more than its library cell, and **flip-flops, not
+gates, are what fill this tile**. A 1×2 tile holds roughly 360 of them. This
+design uses 352.
+
+Why so many hold buffers? Because a design built out of LFSRs, shift
+registers and accumulators is mostly *short* paths between flops, and short
+paths are exactly what needs hold padding. The 11% of the core spent on delay
+cells is a structural consequence of the architecture, not a flow defect.
+
+**The hold margin is deliberately left at the template default of 0.1 ns.**
+Cutting it to 0.05 would free about 1200 µm², and that trade was considered
+and declined. A hold violation is the one timing failure that cannot be
+recovered from after fabrication: setup failures are fixed by slowing the
+clock, and hold failures are not, because the hold constraint does not contain
+the clock period at all. Running this chip at its declared 10 MHz instead of
+the 50 MHz it is signed off at adds **no** hold margin whatsoever. Spending
+11% of a tile on insurance against the only unfixable failure mode is the
+right purchase.
+
+### Catching that failure nine stages early
+
+Global placement prints three numbers that predict the detailed-placement
+failure long before it happens. `tools/harden_local.py` now checks all of them
+after every run:
+
+| signal | passing run | failing run | gate |
+|---|---|---|---|
+| GPL-1004 minimum feasible density | 0.700 | 0.86 | < 0.75 |
+| GPL-1007 density needed for 90% free space | 0.789 | 1.07 | < 1.00 |
+| GPL-0019 global placement utilisation | 69.7% | 85.6% | < 75% |
+| GPL-1012 routability artificial inflation | 1.50% | 11.4% | < 2% |
+
+A GPL-1007 value above 1.0 is arithmetically unplaceable and is the clearest
+single signal of the four. The check is in the local tool only, not in
+`src/config.json`, so it changes nothing about the submitted flow.
 
 ### The max-slew violations, and why they are left alone
 
-The 1×2 build reports 80 max-slew violations: 80 at `max_ss_100C_1v60`, 62 at
-`nom_ss`, 44 at `min_ss`, and **none** at any typical or fast corner. The worst
-is 1.03 ns against a 0.75 ns limit, on nets the resizer buffered with the weak
-`clkdlybuf4s25_1` cell. The taller tile has longer wires than the 1×1 build,
-and LibreLane's design repair only optimises for the typical corner.
+The build reports 286 max-slew violations at `max_ss_100C_1v60`, 198 at
+`nom_ss`, 97 at `min_ss`, and **none** at any typical or fast corner. The
+count rose from 149 on the smaller design, which is expected: more logic on
+the same tile means longer average wires.
 
 Why they are acceptable:
 
 - The 0.75 ns limit is LibreLane's conservative default. The sky130 standard
-  cells are characterised up to 1.5 ns, so 1.03 ns is still inside the
-  characterised tables and the timing numbers are not extrapolated.
-- Timing closes with +5.45 ns of setup slack at a 20 ns period in that same
-  corner, and the chip is declared at 10 MHz, a 100 ns period.
-- The worst net is `fec_en`, a configuration bit that only changes during
-  reset.
+  cells are characterised up to 1.5 ns, so the violating nets are still inside
+  the characterised tables and the timing numbers are not extrapolated.
+- Timing closes with +2.06 ns of setup slack in that same corner, and the chip
+  is declared at 10 MHz, a 100 ns period against the 20 ns it is signed off
+  at.
+- The flow does not gate on them: `MAX_SLEW_VIOLATION_CORNERS` is `['']`, an
+  empty pattern that matches no corner. This is Tiny Tapeout's stock
+  configuration, not a local waiver, and it is reported here rather than
+  quietly relied on.
 - Tiny Tapeout's precheck does not check slew.
 
-Three flow-level fixes were tried and measured before settling on this: a 40%
-slew margin (80 → 62), excluding the `clkdlybuf4s` cells (80 → 145) and adding
-the slow corner to `PNR_CORNERS` (no change). None was clean, so
-`src/config.json` stays at the template defaults.
+Three flow-level fixes were tried and measured on the earlier build before
+settling on this: a 40% slew margin, excluding the weak `clkdlybuf4s` cells,
+and adding the slow corner to `PNR_CORNERS`. The third produced byte-identical
+results, which refutes the natural hypothesis that the slow corner was simply
+not being optimised for. None was clean, so `src/config.json` stays at the
+template defaults.
 
-### Protection against output contention
+### One thing that got worse: on-die decoupling
 
-Two boards running this design both drive `uio[6]` and `uio[7]`, so wiring
-them together carelessly puts one output driver against another with only
-the drivers' on resistance limiting the current. Holding `uio_in[5]` high
-during reset sets `TX_PINS_OFF`, which tri-states both output pins for the
-whole run. `uio_oe` then reads `0x00` and the part drives nothing anywhere
-on the bidirectional bus, while still receiving normally and still running
-loopback internally.
+The smaller design left about 6000 `decap_3` filler cells on the tile. This
+one leaves **1791**, because logic and hold buffers took the space. DC supply
+integrity is unaffected and measured: worst IR drop is 84 µV on 1.8 V, which
+is 0.005%, against an average current of about 0.9 mA.
 
-It costs one flip-flop that the design was already carrying as a reserved
-configuration field. The alternative of driving the pins only while
-transmitting was rejected because it leaves the chip and epoch lines
-floating between frames, and a floating epoch input can glitch a correlation
-window into existence.
+What is reduced is the local charge reservoir that absorbs the di/dt of 352
+flip-flops switching together, and supply ripple is not modelled in static
+timing at all. At the declared 10 MHz, five times slower than signoff, this is
+not a concern. It is recorded because it is the one power-integrity figure
+that moved in the wrong direction, and a reader comparing the two builds
+deserves to see it rather than discover it.
+
+### What the flow does not check
+
+Worth stating plainly, since a wall of zeros invites the wrong conclusion:
+
+- **KLayout DRC and the Magic-versus-KLayout XOR are both disabled** by
+  `RUN_KLAYOUT_DRC: 0` and `RUN_KLAYOUT_XOR: 0` in `src/config.json`. That
+  file is the unmodified Tiny Tapeout template, and both lines sit below its
+  "DO NOT CHANGE ANYTHING BELOW THIS POINT" banner. So Magic is the sole DRC
+  authority and the two GDS writers were never proven geometrically
+  equivalent. Every Tiny Tapeout project ships this way and the shuttle runs
+  its own precheck on submission, so deviating from the proven template three
+  days before the deadline would add risk, not assurance.
+- The manufacturability report's green DRC tick covers Magic only, and the
+  flow says so: `klayout__drc_error__count not reported`.
+- IR drop is computed without `VSRC_LOC_FILES`, which the flow warns about.
+  For a Tiny Tapeout tile the harness owns top-level power, so the 84 µV
+  figure should be read as "nowhere near a problem" rather than as a rigorous
+  number.
+- The long-wire checker is inert: `ERROR_ON_LONG_WIRE` is true but
+  `WIRE_LENGTH_THRESHOLD` is unset, so it is skipped.
 
 ## Remaining work
 
-- [x] `test`, `gds`, `precheck`, `gl_test`, `fpga`, `docs` and `viewer` all green in CI (1×1 build)
+- [x] `test`, `gds`, `precheck`, `gl_test`, `fpga`, `docs` and `viewer` green in CI
 - [x] 1×2 features: FEC, sync-word framing, frequency hopping, partial-band jammer
-- [x] Push the 1×2 build and confirm every workflow is green again
+- [x] 127-chip Gold family, with its lock threshold derived exhaustively before any RTL was written
+- [x] Chip-phase tracking, so two boards with their own crystals keep a link
+- [x] Built-in PRBS-9 bit error rate tester, correlation-magnitude meter and foreign-code monitor
+- [x] Four jammer kinds including the follower, the matched attack
+- [x] Fill the tile: 73.8% utilisation, 352 of a practical ~360 flip-flops
+- [x] Close the slow corner: setup slack +0.083 ns → +2.06 ns for two flip-flops
+- [x] Gate-level simulation of all thirty tests against the hardened netlist
 - [ ] Load the bitstream on an iCE40 board and run the loopback + jammer demo
       (`tools/fpga_local.py` already builds it, and this is the step that
       exercises genuinely asynchronous inputs)

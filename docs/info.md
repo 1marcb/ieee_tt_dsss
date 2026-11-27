@@ -217,16 +217,41 @@ always gives the basic DSSS link with every extra feature off.
 | `uio_in[0]` | `HOP_FAST` | 0 = hop per bit, 1 = hop per chip |
 | `uio_in[2:1]` | `PBJ_BAND` | jammed channels 1 to 7, 1 to 15, 1 to 31, 1 to 47 |
 
-The transmitter and the receiver of a link must agree on `FEC_EN` and
-`FRAME_EN`.
+**Page 2** (`uio_in[5] = 1`, `uio_in[4:3] = 01`), long codes and tracking
+
+| pin | field | meaning |
+|---|---|---|
+| `ui_in[1:0]` | `TX_CODE_HI` | high two bits of the transmit seed, for `LEN127` |
+| `ui_in[3:2]` | `RX_CODE_HI` | high two bits of the receive seed |
+| `ui_in[4]` | `LEN127` | 1 = 127-chip codes, 0 = 31-chip codes |
+| `ui_in[5]` | `TRK_EN` | 1 = chip-phase tracking on, needs `ACQ_EN` |
+| `ui_in[6]` | `PRBS_EN` | 1 = transmit PRBS-9 and measure the bit error rate |
+| `ui_in[7]` | `RX_POP_EN` | 1 = `uio[0]` becomes `RX_POP`, not `TX_START` |
+| `uio_in[0]` | `MON_EN` | 1 = run the cross-correlation monitor |
+| `uio_in[2]` | `DISP_PAGE[2]` | bit 2 of the status page number |
+
+**Page 3** (`uio_in[5] = 1`, `uio_in[4:3] = 10`), the extended jammer
+
+| pin | field | meaning |
+|---|---|---|
+| `ui_in[1:0]` | `JAM_KIND` | 0 broadband, 1 pulsed, 2 periodic, 3 follower |
+| `ui_in[3:2]` | `FOL_DELAY` | follower replay delay, `FOL_DELAY + 1` chips |
+| `ui_in[6:5]` | `PULSE_DUTY` | pulsed duty cycle 1/16, 1/8, 1/4, 1/2 |
+| `ui_in[7]` | `DISP_PAGE[3]` | bit 3 of the status page number |
+
+`uio_in[4:3] = 11` writes nothing and is reserved. Write page 0 first, since
+it clears every extension page, then the extension pages in any order.
+
+The transmitter and the receiver of a link must agree on `FEC_EN`,
+`FRAME_EN` and `LEN127`.
 
 ### Run mode
 
 | pin | function |
 |---|---|
-| `ui_in[7:0]` | byte to transmit, sampled when a frame starts |
-| `uo_out[7:0]` | received byte (`DISP_SEL = 0`) or status page (`DISP_SEL = 1`) |
-| `uio[0]` in | `TX_START`: rising edge sends one byte, hold high to stream |
+| `ui_in[7:0]` | byte to transmit, sampled when a frame starts. Ignored when `PRBS_EN` is set |
+| `uo_out[7:0]` | received byte, or the head of the receive buffer when `RX_POP_EN` is set (`DISP_SEL = 0`), or a status page (`DISP_SEL = 1`) |
+| `uio[0]` in | `TX_START`: rising edge sends one byte, hold high to stream. With `RX_POP_EN` set it is `RX_POP` instead, and a rising edge pops the receive buffer |
 | `uio[1]` in | `RX_CHIP`: received chip stream |
 | `uio[2]` in | `RX_EPOCH`: strobe on chip 0 of each code period |
 | `uio[3]` in | `LOOPBACK_EN`: transmitter wired into receiver on chip |
@@ -237,15 +262,45 @@ The transmitter and the receiver of a link must agree on `FEC_EN` and
 
 ### Status pages
 
+Sixteen pages of eight bits, selected by `DISP_PAGE` and shown on `uo_out`
+while `DISP_SEL` is high. Pages 0 to 3 are unchanged from the earlier build.
+
 | `DISP_PAGE` | bit 7 | bit 6 | bit 5 | bit 4 | bits 3 and 2 | bits 1 and 0 |
 |---|---|---|---|---|---|---|
 | 0 | VALID | LOCKED | HUNTING | CORR[4] | CORR[3:2] | CORR[1:0] |
 | 1 | VALID | LOCKED | IN_FRAME | FEC_ERR | FEC_FIX[1:0] | FRAMES[1:0] |
 | 2 | TX_BUSY | JAM_NOW | CH[5] | CH[4] | CH[3:2] | CH[1:0] |
 | 3 | raw received byte, before error correction | | | | | |
+| 4 | LOCKED | the full match count `CORR[6:0]`, needed at L = 127 | | | | |
+| 5 | 0 | mean correlation magnitude over 256 windows | | | | |
+| 6 | MON_FALSE_LOCK | peak foreign-code correlation magnitude | | | | |
+| 7 | bit errors, low byte | | | | | |
+| 8 | bit errors, high byte | | | | | |
+| 9 | bytes delivered, low byte | | | | | |
+| 10 | bytes delivered, high byte | | | | | |
+| 11 to 15 | FIFO_OVF | FIFO_CNT[1:0] | | TRK_CNT[2:0] | | LEN127, PRBS_EN |
 
-- `CORR` is the match count `M` of the last 31-chip window: 31 or 0 is a
-  perfect correlation.
+- `CORR` is the match count `M` of the last window. `M = L` or `M = 0` is a
+  perfect correlation, and `M = L/2` is no correlation at all. Page 0 shows
+  only the low five bits, which is the whole value at L = 31. Page 4 shows all
+  seven.
+- **Mean correlation magnitude** on page 5 is the link margin. It is the
+  average over 256 windows of the distance of `M` from the midpoint, so it
+  reads 15 on a clean 31-chip link, 63 on a clean 127-chip link, and falls
+  toward 0 as the jammer takes hold. Unlike the instantaneous match count it
+  is steady enough to read off eight LEDs by eye.
+- **Peak foreign-code correlation** on page 6 is measured by a fourth
+  correlator running a different code of the same family over the same
+  windows. It is the code-division isolation of the link, measured rather
+  than asserted. `MON_FALSE_LOCK` latches if a foreign code ever reached the
+  lock threshold, and it must never light: the exhaustive search in
+  `test/jamguard_model.py` says it cannot.
+- **Bit errors and bytes delivered** on pages 7 to 10 are the built-in bit
+  error rate tester. The byte counter advances on every delivered frame, so it
+  doubles as a frame counter. Both counters saturate rather than wrap.
+- `TRK_CNT` counts chip-phase corrections, saturating at 7. If it is moving,
+  the two ends of the link are drifting apart and tracking is holding them
+  together.
 - `FEC_FIX` has one bit per codeword (high, low) that needed a correction in
   the last byte. `FEC_ERR` means a codeword had two errors and could not be
   corrected.
@@ -253,6 +308,23 @@ The transmitter and the receiver of a link must agree on `FEC_EN` and
   tell when a new byte has arrived.
 - `CH` is the transmitter's current hop channel, and `JAM_NOW` is high on
   chips the jammer is flipping.
+
+### Reading a bit error rate
+
+With `PRBS_EN` set, the transmitter sends a PRBS-9 pattern instead of
+`ui_in`, and the receiver predicts each payload bit from the nine payload
+bits before it. The predictor needs no synchronisation machinery, because its
+state *is* the received history. The price is that one bit error in the
+stream shows up as three prediction failures, once as itself and twice more
+when it reaches the two feedback taps. So
+
+```
+bit error rate = bit errors / (3 x 8 x bytes delivered)
+```
+
+Discard the first two bytes after reset, whose predictions come from an empty
+history. To measure what the error correction is worth, take one reading with
+`FEC_EN` clear and one with it set, and divide.
 
 ### Demo 1: loopback, one board
 
@@ -326,28 +398,159 @@ microcontroller.
 | `clk` | shared | `clk` |
 | `gnd` | shared | `gnd` |
 
-**The clock must be shared.** The receiver samples one chip per clock and has
-no clock recovery. Two free-running oscillators 100 ppm apart would slip a chip
-every ten thousand, so the link would work for a while and then fail
+Give both the same `CODE_ID` and the same `FEC_EN`, `FRAME_EN` and `LEN127`,
+and bytes set on A appear on B. Change B's `RX_CODE_ID` and the link goes
+dead.
+
+**On the clock, and why `TRK_EN` changes the answer.** The receiver samples one
+chip per clock. Share the clock if you conveniently can, but you no longer
+have to.
+
+Without tracking, two free-running oscillators 100 ppm apart slip a chip every
+ten thousand, which at 31 chips per bit is one slip every 322 bits. A slip
+costs the receiver its lock, so the link works for a while and then fails
 periodically.
 
-Give both the same `CODE_ID` and the same `FEC_EN` / `FRAME_EN`, and bytes set
-on A appear on B. Change B's `RX_CODE_ID` and the link goes dead.
+With `TRK_EN` set on the receiving board, the correlator measures one chip
+either side of its own phase and lengthens or shortens the next window by one
+chip to follow the drift. The capacity is one chip per code period, and a
+100 ppm offset only needs 0.0031 chips per period at L = 31, so the loop has
+roughly 320 times the correction authority it needs. Stated as a frequency
+offset, tracking follows up to 1 part in L, which is 3.2% at L = 31 and 0.79%
+at L = 127. Crystals are a hundred times better than that, and even a trimmed
+RC oscillator is usually inside it.
+
+What tracking does not give you is tolerance of a *different nominal* clock
+rate. There is no clock recovery from scratch: both ends must be aiming at the
+same frequency, and tracking removes the requirement that they hit it exactly.
+
+### Demo 8: 127 chips against 31, same jammer
+
+The measurement that shows what processing gain is worth.
+
+1. Reset with page 0 (`CODE_ID = 70`, `JAM_LVL = 2`) and nothing else. Set
+   `LOOPBACK_EN` and `JAM_EN`.
+2. Send thirty-two bytes and count the ones that come back wrong.
+3. Reset again, this time also writing page 2 with `LEN127` set, and repeat.
+
+At jam level 2 the jammer flips 34.4% of chips. The 31-chip link gives roughly
+ten bit errors in 256. The 127-chip link gives none. That is the 6.13 dB
+difference between 14.91 dB and 21.04 dB of processing gain, and the predicted
+bit error rates are 3.6e-2 and 1.5e-4.
+
+Read page 4 while you do it. The 31-chip link will show `LOCKED` low, because
+34.4% of chips corrupted is past its 19.4% lock tolerance. The 127-chip link
+holds a match count near 127 and stays locked, because its lock tolerance is
+30.7%.
+
+There is a band worth understanding here. Lock needs at most 39 of 127 chips
+wrong, but the majority vote needs fewer than 64. Between 30.7% and 49.6%
+corruption the 127-chip link still delivers perfect bytes while refusing to
+claim lock, so an epoch-slaved receiver keeps working where an acquiring one
+cannot. Acquire on a quiet channel, then turn the jammer up.
+
+### Demo 9: measure a bit error rate with no instruments
+
+1. Reset with page 0 (`CODE_ID = 23`), then page 2 with `PRBS_EN` set.
+2. Set `LOOPBACK_EN`, and `JAM_EN` with whatever `JAM_LVL` you want to study.
+3. Hold `TX_START` high. Frames now stream back to back with no host
+   involvement at all.
+4. Read pages 7 and 8 for the error count, pages 9 and 10 for the bytes
+   delivered, and divide: `errors / (3 x 8 x bytes)`.
+
+The factor of three is not a fudge. The checker predicts each bit from the
+nine before it, so a single bit error is counted once as itself and twice more
+when it reaches the two feedback taps. Discard the first two bytes, whose
+predictions come from an empty history.
+
+Now set `FEC_EN` and take the reading again. The ratio of the two is what the
+error correction is worth on your channel, measured rather than simulated.
+
+### Demo 10: the follower jammer, and why spread spectrum works
+
+This is the demonstration worth doing if you only do one.
+
+1. Reset with page 0 (`CODE_ID = 29`, `JAM_LVL = 3` for the fine ladder top),
+   then page 3 with `JAM_KIND = 3` and `FOL_DELAY` anywhere from 0 to 3.
+2. Set `LOOPBACK_EN` and `JAM_EN`, and send some bytes.
+
+The jammer is now replaying your own chip stream back at you, delayed by one
+to four chips. It is using your code, at your chip rate, perfectly matched.
+It should be the strongest possible attack.
+
+It does nothing. The bytes arrive intact.
+
+The reason is the whole point of a Gold code. Correlating the code against a
+shifted copy of itself gives an autocorrelation sidelobe bounded by
+t(n) = 1 + 2^((n+1)/2), which is 9 of 31 and 17 of 127, never the code length.
+A jammer that replays your signal is a jammer at the wrong code phase, and
+the correlator rejects wrong code phases by construction. Compare it against
+`JAM_KIND = 0` at the same level to see a jammer that is not matched to your
+code do considerably more damage.
+
+### Demo 11: watch the chip phase being tracked
+
+1. Reset with page 0 (`CODE_ID = 11`, `ACQ_EN` set), page 1 with `FRAME_EN`
+   set and `DISP_PAGE = 15`, and page 2 with `TRK_EN` set.
+2. Feed a chip stream from another board whose clock is deliberately a little
+   off, or in simulation simply delete one chip now and then.
+3. Watch `TRK_CNT` on page 15.
+
+If `TRK_CNT` is moving, the two ends are drifting apart and the loop is
+holding them together. Clear `TRK_EN` and the same stream will keep losing
+lock instead, and the recovery is not symmetric: the serial search can only
+retard the local phase, so a slip in the advancing direction takes up to L-1
+further slips to come round the long way. In simulation, one chip dropped
+every four frames takes delivery from 5 of 16 bytes to 11 of 16 once tracking
+is on.
+
+### Demo 12: measure the code isolation
+
+1. Reset with page 0 (`CODE_ID = 9`), then page 2 with `MON_EN` set and
+   `DISP_PAGE = 6`.
+2. Set `LOOPBACK_EN`, send some bytes, and read page 6.
+
+A fourth correlator has been running a *different* code of the same family
+over the same windows. Page 6 holds the largest correlation magnitude it ever
+saw, and `MON_FALSE_LOCK` in bit 7 latches if one ever reached the lock
+threshold.
+
+With the receiver aligned, the reading should be **0**. That is not a null
+result: two members of this Gold family at zero relative shift correlate to
+exactly -1, because they differ by a shift of the second LFSR and summing one
+full m-sequence period gives -1. Since the reported magnitude is
+(|R| - 1) / 2, an |R| of 1 reads as 0. The bound for any aligned window is
+t(5) = 9, which would read as 4.
+
+`MON_FALSE_LOCK` must never light. The exhaustive search in
+`test/jamguard_model.py` enumerates every misaligned window of every code pair
+at every offset and every pair of adjacent data bits, 8.1 million of them at
+L = 127, and finds none that reaches the threshold.
 
 ### Simulation
 
 ```
 cd test
-make -B                   # RTL, 19 tests
-python jamguard_model.py  # proves the coding-theory claims on their own
+make -B                            # RTL, 30 tests
+make -B GATES=yes                  # the same 30 against the hardened netlist
+python jamguard_model.py           # proves the coding theory on its own
+python jamguard_model.py --quick   # same, skipping the exhaustive searches
 ```
 
 `test/jamguard_model.py` is an independent software model, and the cocotb tests
 compare the hardware against it rather than against hand-written expected
-values. It also proves the preferred-pair property, the 15-of-31 jam margin,
-that the lock threshold clears the worst misaligned correlation, that SECDED
-corrects every single error and flags every double, that interleaving fixes
-every 2-bit burst, and that a partly received sync word can never match.
+values. On its own it proves, for both code families, the preferred-pair
+property with the bound attained, the (L-1)/2 jam margin, that the lock
+threshold clears the worst misaligned correlation a free-running receiver can
+see, and that a replayed chip stream cannot reach it either, which is why the
+follower jammer fails. It also proves that the subtractor-free magnitude fold
+the hardware uses equals the arithmetic one for every reachable match count,
+that the chip-phase discriminator points toward alignment at every offset,
+that SECDED corrects every single error and flags every double, that
+interleaving fixes every 2-bit burst, that a partly received sync word can
+never match, and that one injected bit error produces exactly three PRBS
+prediction failures, which is the calibration the error-rate readout depends
+on.
 
 ## External hardware
 

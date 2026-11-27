@@ -19,6 +19,12 @@ from cocotb.triggers import ClockCycles, FallingEdge, Timer
 
 from jamguard_model import (
     L,
+    LONG,
+    SHORT,
+    JAM_BROADBAND,
+    JAM_FOLLOWER,
+    JAM_PERIODIC,
+    JAM_PULSED,
     JAM_THRESH,
     LOCK_HI,
     LOCK_LO,
@@ -32,6 +38,9 @@ from jamguard_model import (
     gold_code,
     hop_channels,
     in_band,
+    Jammer,
+    prbs_bytes,
+    prbs_check,
     spread_bits,
     spread_byte,
     spread_frame,
@@ -102,17 +111,25 @@ def mode_byte(fec=False, framed=False, fhss=False, pbj=False, jam_fine=False,
 async def reset(dut, tx_code, jam_level=0, acq=False, rx_code=0,
                 tx_pins_off=False, fec=False, framed=False, fhss=False,
                 pbj=False, disp_page=0, hop_fast=False, pbj_band=0,
-                page1=None):
+                page1=None, len127=False, trk=False, prbs=False,
+                rx_pop=False, mon=False, jam_kind=0, fol_delay=0,
+                pulse_duty=0):
     """Reset the DUT and latch a configuration off the pins.
 
     The configuration flops track the pins the whole time rst_n is low, so
     the value present when reset releases is what gets kept.  uio_in[5]
-    selects the page being written: page 0 (code IDs, jam level, acquisition)
-    is written first, which also clears page 1, then page 1 (the mode byte
-    and its extension) is written only if any of its fields are non-zero.
+    selects page 0 or the extension group, and on an extension page
+    uio_in[4:3] picks which one.  Page 0 (code IDs, jam level, acquisition)
+    is written first, which also clears every extension page, then each
+    extension page is written only if any of its fields are non-zero.
 
     jam_level 0..3 is the coarse ladder, 4..7 the fine one (sets jam_fine).
     page1=True forces a page-1 write even when every mode field is zero.
+
+    tx_code and rx_code are up to 7 bits.  Their low five bits ride on page
+    0 exactly as they always have, and the high two go on page 2, so a
+    configuration that only uses the 31-chip codes writes nothing to page 2
+    and is byte for byte the configuration this design shipped with.
     """
     uio = Uio(dut)
     dut.ena.value = 1
@@ -126,15 +143,32 @@ async def reset(dut, tx_code, jam_level=0, acq=False, rx_code=0,
     dut.uio_in.value = uio.val
     await ClockCycles(dut.clk, 6)
 
-    # Page 1
+    async def write_page(sub, ui_val, uio_low):
+        dut.ui_in.value = ui_val
+        uio.val = (1 << 5) | (sub << 3) | uio_low
+        dut.uio_in.value = uio.val
+        await ClockCycles(dut.clk, 4)
+
+    # Page 1, the mode byte
     mb = mode_byte(fec, framed, fhss, pbj, jam_level >= 4, disp_page,
                    tx_pins_off)
     m2 = int(hop_fast) | (pbj_band & 3) << 1
     if page1 or (page1 is None and (mb or m2)):
-        dut.ui_in.value = mb
-        uio.val = (1 << 5) | m2
-        dut.uio_in.value = uio.val
-        await ClockCycles(dut.clk, 4)
+        await write_page(0, mb, m2)
+
+    # Page 2, long codes, tracking, pattern generator and the receive buffer
+    p2a = ((tx_code >> 5) & 3) | ((rx_code >> 5) & 3) << 2 \
+        | int(len127) << 4 | int(trk) << 5 | int(prbs) << 6 \
+        | int(rx_pop) << 7
+    p2b = int(mon) | ((disp_page >> 2) & 1) << 2
+    if p2a or p2b:
+        await write_page(1, p2a, p2b)
+
+    # Page 3, the extended jammer
+    p3a = (jam_kind & 3) | (fol_delay & 3) << 2 | (pulse_duty & 3) << 5 \
+        | ((disp_page >> 3) & 1) << 7
+    if p3a:
+        await write_page(2, p3a, 0)
 
     await FallingEdge(dut.clk)
     dut.rst_n.value = 1
@@ -156,14 +190,14 @@ def frame_len(fec=False, framed=False):
     return (16 if fec else 8) + (8 if framed else 0)
 
 
-async def send_byte(dut, uio, value, slack=12, nbits=8):
-    """Pulse tx_start, then wait out the whole nbits x 31 chip frame."""
+async def send_byte(dut, uio, value, slack=12, nbits=8, big_l=L):
+    """Pulse tx_start, then wait out the whole nbits x big_l chip frame."""
     dut.ui_in.value = value
     uio.set(tx_start=1)
     await FallingEdge(dut.clk)
     await FallingEdge(dut.clk)
     uio.set(tx_start=0)
-    await ClockCycles(dut.clk, nbits * L + slack)
+    await ClockCycles(dut.clk, nbits * big_l + slack)
     await FallingEdge(dut.clk)
 
 
@@ -191,7 +225,7 @@ async def read_status(dut, uio):
     return val
 
 
-async def drive_chips(dut, uio, chips, epoch=True, watch=None):
+async def drive_chips(dut, uio, chips, epoch=True, watch=None, big_l=L):
     """Feed a chip stream in on rx_chip_in, one chip per clock.
 
     rx_chip_in and rx_epoch_in pass through synchronisers of identical depth,
@@ -206,7 +240,7 @@ async def drive_chips(dut, uio, chips, epoch=True, watch=None):
     """
     await FallingEdge(dut.clk)
     for i, c in enumerate(chips):
-        uio.set(rx_chip=c, rx_epoch=1 if (epoch and i % L == 0) else 0)
+        uio.set(rx_chip=c, rx_epoch=1 if (epoch and i % big_l == 0) else 0)
         await FallingEdge(dut.clk)
         if watch is not None:
             watch(i, int(dut.uo_out.value))
@@ -1252,3 +1286,505 @@ async def test_tx_streaming(dut):
         )
         dut._log.info("fec=%d: %d frames streamed back to back, %d chips, "
                       "epoch grid unbroken", fec, nframes, total)
+
+
+# ---------------------------------------------------------------------------
+# 22. The 127-chip code family
+# ---------------------------------------------------------------------------
+
+@cocotb.test()
+async def test_long_code_chip_sequence(dut):
+    """The 127-chip transmitter must emit the degree-7 Gold code exactly.
+
+    This is the test that would catch a wrong tap on the long polynomial,
+    which no amount of loopback testing would: loopback uses the same
+    generator on both sides, so a wrong polynomial still round trips.
+    """
+    code_id = 37        # needs both the page 0 and page 2 halves of the seed
+    data = 0x9C
+    big_l = LONG.L
+
+    start_clock(dut)
+    uio = await reset(dut, tx_code=code_id, len127=True)
+
+    dut.ui_in.value = data
+    uio.set(tx_start=1)
+    await FallingEdge(dut.clk)
+    await FallingEdge(dut.clk)
+    uio.set(tx_start=0)
+
+    for _ in range(32):
+        await FallingEdge(dut.clk)
+        if tx_epoch(dut):
+            break
+    else:
+        raise AssertionError("tx_epoch_out never asserted after tx_start")
+
+    chips, epochs = [tx_chip(dut)], [0]
+    for i in range(1, 8 * big_l):
+        await FallingEdge(dut.clk)
+        chips.append(tx_chip(dut))
+        if tx_epoch(dut):
+            epochs.append(i)
+
+    expected = spread_byte(data, code_id, fam=LONG)
+    assert chips == expected, (
+        "long chip stream mismatch at chip "
+        f"{next(i for i, (a, b) in enumerate(zip(chips, expected)) if a != b)}"
+    )
+    assert epochs == [i * big_l for i in range(8)], f"epochs at {epochs}"
+    dut._log.info("%d chips and 8 epoch strobes match the degree-7 model",
+                  8 * big_l)
+
+
+@cocotb.test()
+async def test_long_code_loopback(dut):
+    """Every byte must survive a 127-chip round trip, and beat 31 chips.
+
+    The second half is the measurement that justifies the long family
+    existing at all: both lengths are run through the same jammer at the same
+    strength and the bit errors are counted.  At 34.4% of chips flipped the
+    predicted bit error rate is 3.6e-2 at L = 31 and 1.5e-4 at L = 127, so
+    256 bits should show around nine errors on the short code and none on the
+    long one.
+    """
+    code_id = 70
+    payload = [(0x5A + 7 * i) & 0xFF for i in range(32)]
+
+    start_clock(dut)
+
+    # Clean channel: both lengths must be exact and must hold lock.
+    for use_long, fam in ((False, SHORT), (True, LONG)):
+        uio = await reset(dut, tx_code=code_id, jam_level=0, len127=use_long)
+        uio.set(loopback=1, jam_en=0, disp_sel=0)
+        await ClockCycles(dut.clk, 3)
+        for value in payload[:6]:
+            await send_byte(dut, uio, value, big_l=fam.L)
+            assert int(dut.uo_out.value) == value, (
+                f"clean {fam.name} round trip returned "
+                f"{int(dut.uo_out.value):#04x}, expected {value:#04x}")
+        st = await read_status(dut, uio)
+        assert status_fields(st)["locked"] == 1,             f"{fam.name} must hold lock on a clean channel"
+
+    # Jammed channel, same jammer, both lengths.
+    errors = {}
+    for use_long, fam in ((False, SHORT), (True, LONG)):
+        uio = await reset(dut, tx_code=code_id, jam_level=2, len127=use_long)
+        uio.set(loopback=1, jam_en=1, disp_sel=0)
+        await ClockCycles(dut.clk, 3)
+        bad = 0
+        for value in payload:
+            await send_byte(dut, uio, value, big_l=fam.L)
+            bad += bin(int(dut.uo_out.value) ^ value).count("1")
+        errors[fam.name] = bad
+        dut._log.info("%s at 34.4%% chips flipped: %d bit errors in %d",
+                      fam.name, bad, 8 * len(payload))
+
+    assert errors["L127"] == 0, (
+        f"L=127 should be error free at this jam level, got "
+        f"{errors['L127']} bit errors")
+    assert errors["L31"] > 0, (
+        "L=31 should show errors at this jam level, so the comparison with "
+        "L=127 means something")
+    dut._log.info("6.1 dB of extra processing gain: %d errors -> %d",
+                  errors["L31"], errors["L127"])
+
+
+@cocotb.test()
+async def test_long_code_lock_band(dut):
+    """Between 30.7% and 49.6% of chips corrupted, L=127 decodes but cannot
+    acquire.
+
+    Lock needs at most 39 of 127 chips wrong and the majority vote needs
+    fewer than 64, so there is a band of channel quality in which an
+    epoch-slaved receiver keeps delivering perfect bytes while a receiver
+    hunting for the phase can never confirm one.  That is a property of the
+    thresholds, not a defect, and it is the reason the datasheet tells you to
+    acquire on a quiet channel and only then turn the jammer up.
+    """
+    code_id = 70
+    payload = [0xA5, 0x3C, 0x81, 0x00, 0xFF, 0x5A]
+
+    start_clock(dut)
+    uio = await reset(dut, tx_code=code_id, jam_level=2, len127=True)
+    uio.set(loopback=1, jam_en=1, disp_sel=0)
+    await ClockCycles(dut.clk, 3)
+
+    bad = 0
+    for value in payload:
+        await send_byte(dut, uio, value, big_l=LONG.L)
+        bad += bin(int(dut.uo_out.value) ^ value).count("1")
+
+    st = status_fields(await read_status(dut, uio))
+    assert bad == 0, f"the majority vote should still decode, got {bad} errors"
+    assert st["locked"] == 0, (
+        "34.4% of chips flipped is past the 30.7% lock tolerance, so lock "
+        "must NOT be held here")
+    dut._log.info("decoded %d bytes with 0 errors while unlocked, exactly the "
+                  "predicted band", len(payload))
+
+
+@cocotb.test()
+async def test_long_code_rejects_foreign(dut):
+    """A 127-chip receiver must not lock onto a different long code.
+
+    The transmitter and receiver are given different members of the degree-7
+    family and the receiver is left free running, which is the configuration
+    a false lock would actually happen in.
+    """
+    big_l = LONG.L
+    start_clock(dut)
+    uio = await reset(dut, tx_code=19, rx_code=100, acq=True, len127=True)
+    uio.set(loopback=0, jam_en=0, disp_sel=1)
+    await ClockCycles(dut.clk, 3)
+
+    chips = spread_bits([1, 0, 1, 1, 0, 0, 1, 0] * 3, 19, fam=LONG)
+    worst = 0
+    locked_any = 0
+
+    def watch(_i, byte_val):
+        nonlocal worst, locked_any
+        st = status_fields(byte_val)
+        locked_any |= st["locked"]
+
+    await drive_chips(dut, uio, chips, epoch=False, watch=watch, big_l=big_l)
+
+    assert locked_any == 0, (
+        "receiver locked onto a foreign 127-chip code, which the exhaustive "
+        "search in jamguard_model.py says is impossible")
+    dut._log.info("no false lock over %d chips of a foreign long code",
+                  len(chips))
+
+
+def page_last_fields(byte_val):
+    """Unpack the last status page: {ovf, fifo_cnt[1:0], trk[2:0], len, prbs}."""
+    return {
+        "fifo_ovf": (byte_val >> 7) & 1,
+        "fifo_cnt": (byte_val >> 5) & 3,
+        "trk_cnt": (byte_val >> 2) & 7,
+        "len127": (byte_val >> 1) & 1,
+        "prbs_en": byte_val & 1,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 25. Chip-phase tracking
+# ---------------------------------------------------------------------------
+
+def _drift(chips, period, insert):
+    """Add or remove one chip every `period` chips, simulating clock drift.
+
+    Removing a chip models a transmitter whose clock runs fast relative to
+    the receiver, so the stream arrives quicker than the local code advances.
+    Adding one models the opposite.  Real crystals at the same nominal
+    frequency differ by tens of parts per million and produce exactly this,
+    just far more slowly than a simulation can afford to wait for.
+    """
+    out = []
+    for i, c in enumerate(chips):
+        if period and i and i % period == 0:
+            if insert:
+                out.append(c)
+            else:
+                continue
+        out.append(c)
+    return out
+
+
+@cocotb.test()
+async def test_chip_phase_tracking(dut):
+    """Tracking must keep a drifting link alive that would otherwise die.
+
+    This is the feature that decides whether two boards with their own
+    crystals can talk at all.  Without tracking, a one-chip slip costs the
+    receiver its lock, and recovery is not symmetric: the serial search can
+    only ever retard the local phase, so a slip in the advancing direction
+    needs up to L-1 further slips to walk all the way around.  With tracking
+    the advanced correlator sees the peak immediately and the next window is
+    shortened by one chip, which fixes the error inside one code period.
+    """
+    code_id = 11
+    payload = [(0x31 * (i + 1)) & 0xFF for i in range(16)]
+    base = []
+    for v in payload:
+        base.extend(spread_frame(v, code_id, framed=True))
+
+    frame_chips = 16 * L         # a framed byte is 8 sync plus 8 payload bits
+    start_clock(dut)
+
+    results = {}
+    for insert in (False, True):
+        for trk in (False, True):
+            uio = await reset(dut, tx_code=code_id, acq=True, framed=True,
+                              trk=trk, disp_page=15)
+            uio.set(loopback=0, jam_en=0, disp_sel=0)
+            await ClockCycles(dut.clk, 3)
+
+            seen = []
+
+            def watch(_i, byte_val, seen=seen):
+                if not seen or seen[-1] != byte_val:
+                    seen.append(byte_val)
+
+            await drive_chips(dut, uio,
+                              _drift(base, 4 * frame_chips, insert),
+                              epoch=False, watch=watch)
+            delivered = sum(1 for v in payload if v in seen)
+            trk_cnt = page_last_fields(
+                await read_status(dut, uio))["trk_cnt"]
+            results[(insert, trk)] = (delivered, trk_cnt)
+            dut._log.info(
+                "%s chips, tracking %s: %2d of %d bytes delivered, "
+                "%d corrections",
+                "added  " if insert else "dropped",
+                "on " if trk else "off", delivered, len(payload), trk_cnt)
+
+    for insert in (False, True):
+        assert results[(insert, True)][1] > 0, (
+            "tracking was enabled and the stream drifted, so the hardware "
+            "must have made at least one phase correction")
+        assert results[(insert, False)][1] == 0, (
+            "tracking was disabled, so no correction may be reported")
+        assert results[(insert, True)][0] >= results[(insert, False)][0], (
+            "tracking must never deliver fewer bytes than no tracking")
+
+    # Dropped chips are the hard direction.  A dropped chip leaves the local
+    # replica one chip behind the signal, and the serial search can only
+    # retard, so unaided it has to walk L-1 slips the long way round.  Added
+    # chips leave it one chip ahead, which one slip happens to fix, so the
+    # search gets that direction right by luck.  Tracking must show a clear
+    # win on the hard direction.
+    assert results[(False, True)][0] > results[(False, False)][0], (
+        "on dropped chips tracking must deliver strictly more: got "
+        f"{results[(False, True)][0]} with tracking against "
+        f"{results[(False, False)][0]} without")
+    dut._log.info(
+        "dropped-chip drift: %d of %d bytes without tracking, %d of %d with",
+        results[(False, False)][0], len(payload),
+        results[(False, True)][0], len(payload))
+
+
+# ---------------------------------------------------------------------------
+# 26. Cross-correlation monitor
+# ---------------------------------------------------------------------------
+
+@cocotb.test()
+async def test_cross_correlation_monitor(dut):
+    """The monitor must measure the Gold bound in silicon, and never lock.
+
+    A fourth correlator runs the next code in the family over the receiver's
+    own windows.  With the receiver aligned, the monitor sees one member of
+    the family against another at zero relative shift, which for this
+    construction is exactly -1: the two codes differ by a shift of LFSR-B,
+    and summing one full m-sequence period gives -1.  So |R| = 1 and the
+    reported magnitude is 0.  Any aligned window at all is bounded by
+    t(5) = 9, which is magnitude 4.
+    """
+    code_id = 9
+    payload = [0xA5, 0x5A, 0x00, 0xFF, 0x3C]
+
+    start_clock(dut)
+    uio = await reset(dut, tx_code=code_id, mon=True, disp_page=6)
+    uio.set(loopback=1, jam_en=0, disp_sel=0)
+    await ClockCycles(dut.clk, 3)
+
+    for value in payload:
+        await send_byte(dut, uio, value)
+        assert int(dut.uo_out.value) == value, "loopback broke during the test"
+
+    st = await read_status(dut, uio)
+    false_lock = (st >> 7) & 1
+    peak = st & 0x7F
+
+    assert false_lock == 0, (
+        "a foreign code reached the lock threshold, which the exhaustive "
+        "search in jamguard_model.py says cannot happen")
+    assert peak <= 4, (
+        f"aligned cross-correlation magnitude {peak} exceeds the t(5) = 9 "
+        "bound, which is magnitude 4")
+    dut._log.info("monitor peak magnitude %d (|R| = %d), bound is 4 "
+                  "(|R| = 9), false lock %d", peak, 2 * peak + 1, false_lock)
+
+
+# ---------------------------------------------------------------------------
+# 27. Built-in bit error rate tester
+# ---------------------------------------------------------------------------
+
+@cocotb.test()
+async def test_prbs_bert(dut):
+    """The pattern generator, the checker and both counters, bit exact.
+
+    The transmitted bytes must be the PRBS-9 sequence the model predicts, and
+    the error counter must equal what the model's checker reports over those
+    very bytes, including the startup transient from an empty history.
+    """
+    code_id = 23
+    nbytes = 10
+    want = prbs_bytes(nbytes)
+
+    # The model's checker over the same bytes, from the same empty history.
+    hist, expect_err = 0, 0
+    for b in want:
+        hist, e = prbs_check(hist, b)
+        expect_err += e
+
+    start_clock(dut)
+
+    async def run(page, jam_level=0):
+        uio = await reset(dut, tx_code=code_id, prbs=True, disp_page=page,
+                          jam_level=jam_level)
+        uio.set(loopback=1, jam_en=1 if jam_level else 0, disp_sel=0)
+        await ClockCycles(dut.clk, 3)
+        seq = []
+        for _ in range(nbytes):
+            await send_byte(dut, uio, 0x00)   # ui_in is ignored with prbs_en
+            seq.append(int(dut.uo_out.value))
+        return seq, await read_status(dut, uio)
+
+    got, err_lo = await run(7)
+    assert got == want, (
+        "PRBS-9 sequence mismatch\n"
+        f"  got    {[hex(v) for v in got]}\n"
+        f"  expect {[hex(v) for v in want]}")
+    assert err_lo == expect_err, (
+        f"error counter reads {err_lo}, model predicts {expect_err}. The "
+        "first two bytes are unpredictable from an empty history, which is "
+        "where a clean run's count comes from.")
+
+    _, bytes_lo = await run(9)
+    assert bytes_lo == nbytes, (
+        f"byte counter reads {bytes_lo}, expected {nbytes}")
+    dut._log.info("PRBS-9: %d bytes bit exact, %d prediction failures, model "
+                  "predicted %d", nbytes, err_lo, expect_err)
+
+    _, jammed = await run(7, jam_level=3)
+    assert jammed > err_lo, (
+        "half the chips were flipped, so the error counter must exceed the "
+        f"clean reading: got {jammed} against {err_lo}")
+    dut._log.info("jammed at 50 percent chip flip: %d failures against %d "
+                  "clean", jammed, err_lo)
+
+
+# ---------------------------------------------------------------------------
+# 28. Receive buffer
+# ---------------------------------------------------------------------------
+
+@cocotb.test()
+async def test_rx_buffer(dut):
+    """Two bytes must queue, pop in order, and set the overflow flag.
+
+    rx_pop_en re-purposes uio[0] from TX_START to RX_POP, so this is a
+    receive-only board and the chips have to arrive from outside, which is
+    exactly how the feature is meant to be used.
+
+    Nothing here assumes WHICH byte reaches the head of the buffer.  The
+    serial search consumes however many early frames it needs before the
+    first one is delivered, so the identity of the first delivered byte is
+    not a property of the buffer.  What is a property of the buffer is its
+    depth, that a full buffer drops rather than overwrites, and that bytes
+    come out in the order they went in, and those are what is checked.
+    """
+    code_id = 17
+    payload = [0xC3, 0x96, 0x5A, 0x69, 0x3C, 0xA5]
+    chips = []
+    for v in payload:
+        chips.extend(spread_frame(v, code_id, framed=True))
+
+    start_clock(dut)
+    uio = await reset(dut, tx_code=code_id, acq=True, framed=True,
+                      rx_pop=True, disp_page=15)
+    uio.set(loopback=0, jam_en=0, disp_sel=0)
+    await ClockCycles(dut.clk, 3)
+
+    await drive_chips(dut, uio, chips, epoch=False)
+    await ClockCycles(dut.clk, 4)
+
+    st = page_last_fields(await read_status(dut, uio))
+    head = int(dut.uo_out.value)
+    dut._log.info("after %d frames: count=%d overflow=%d head=%#04x",
+                  len(payload), st["fifo_cnt"], st["fifo_ovf"], head)
+
+    assert st["fifo_cnt"] == 2, (
+        "the buffer is two deep and more than two frames arrived, so it must "
+        f"hold 2, not {st['fifo_cnt']}")
+    assert st["fifo_ovf"] == 1, (
+        "more frames arrived than the buffer holds and nothing was popped, "
+        "so the overflow flag must be set")
+    assert head in payload[:-1], (
+        f"the head {head:#04x} is not one of the transmitted bytes, so the "
+        "buffer is not holding what it received")
+
+    # Popping must yield the byte that followed it in transmission order.
+    expect_next = payload[payload.index(head) + 1]
+    uio.set(tx_start=1)
+    await ClockCycles(dut.clk, 4)
+    uio.set(tx_start=0)
+    await ClockCycles(dut.clk, 4)
+
+    got_next = int(dut.uo_out.value)
+    assert got_next == expect_next, (
+        f"after popping {head:#04x} the head must be the next byte sent, "
+        f"{expect_next:#04x}, got {got_next:#04x}")
+    st = page_last_fields(await read_status(dut, uio))
+    assert st["fifo_cnt"] == 1, f"count must fall to 1, got {st['fifo_cnt']}"
+    dut._log.info("queued %#04x then %#04x and popped them in that order, "
+                  "count fell to %d", head, got_next, st["fifo_cnt"])
+
+
+# ---------------------------------------------------------------------------
+# 29. The extended jammer kinds
+# ---------------------------------------------------------------------------
+
+@cocotb.test()
+async def test_jammer_kinds(dut):
+    """Each jammer kind must produce the density the model predicts.
+
+    The broadband, pulsed and periodic kinds depend only on the jammer's own
+    state, so their densities are predicted exactly.  The follower kind
+    depends on the chip stream it is replaying, and its point is not its
+    density but that a jammer using the victim's own code gains nothing from
+    doing so, which is checked by requiring the link to survive it.
+    """
+    code_id = 29
+    nclk = 4000
+    level = 6                      # 31.25 percent of chips
+
+    start_clock(dut)
+    for kind, name, duty in ((JAM_BROADBAND, "broadband", 0),
+                             (JAM_PULSED, "pulsed", 2),
+                             (JAM_PERIODIC, "periodic", 0)):
+        uio = await reset(dut, tx_code=code_id, jam_level=level,
+                          jam_kind=kind, pulse_duty=duty, disp_page=2)
+        uio.set(loopback=1, jam_en=1, disp_sel=1)
+        await ClockCycles(dut.clk, 3)
+
+        hits = 0
+        for _ in range(nclk):
+            await FallingEdge(dut.clk)
+            hits += (int(dut.uo_out.value) >> 6) & 1
+
+        ref = Jammer(jam_level=level, kind=kind, pulse_duty=duty)
+        predicted = sum(ref.step() for _ in range(nclk))
+        dut._log.info("%-9s density measured %.4f, model %.4f",
+                      name, hits / nclk, predicted / nclk)
+        assert abs(hits - predicted) <= max(8, 0.1 * predicted), (
+            f"{name} jammer density {hits}/{nclk} does not match the model's "
+            f"{predicted}/{nclk}")
+
+    # The follower replays the chip stream back after a delay.  It is the
+    # matched attack, and it must fail: a Gold code correlated against a
+    # shifted copy of itself gives at most t(n), never the code length.
+    for delay in (0, 3):
+        uio = await reset(dut, tx_code=code_id, jam_level=7,
+                          jam_kind=JAM_FOLLOWER, fol_delay=delay)
+        uio.set(loopback=1, jam_en=1, disp_sel=0)
+        await ClockCycles(dut.clk, 3)
+        bad = 0
+        for value in (0xA5, 0x5A, 0x3C, 0xC3):
+            await send_byte(dut, uio, value)
+            bad += bin(int(dut.uo_out.value) ^ value).count("1")
+        dut._log.info("follower jammer, delay %d chips: %d bit errors in 32",
+                      delay + 1, bad)
+        assert bad == 0, (
+            "the matched attack must gain nothing, got "
+            f"{bad} bit errors at a replay delay of {delay + 1} chips")
