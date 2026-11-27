@@ -360,6 +360,40 @@ A GPL-1007 value above 1.0 is arithmetically unplaceable and is the clearest
 single signal of the four. The check is in the local tool only, not in
 `src/config.json`, so it changes nothing about the submitted flow.
 
+### The clock tree, and where the skew penalty actually comes from
+
+Measured at the worst corner, `max_ss_100C_1v60`:
+
+| | |
+|---|---|
+| Sinks on `clk` | 352, clustered to 33 |
+| Clock buffers built by CTS | 38, plus 14 more for load balancing |
+| Insertion delay to the launch flop | 1.245 ns |
+| Insertion delay to the capture flop | 1.095 ns |
+| **Raw tree skew** | **0.151 ns** |
+| Configured clock uncertainty | 0.250 ns |
+| Reconvergence pessimism given back | 0.054 ns |
+| **Total setup skew charged** | **0.347 ns** |
+
+The useful observation is the split. Only 0.151 ns of that 0.347 ns is the
+clock tree. The dominant term is the flat 0.250 ns `clock uncertainty`
+allowance, which is a signoff constant rather than a measured property of this
+design, and it is 72% of the penalty. So building a shallower or better
+balanced tree would recover almost nothing, and effort spent there would be
+misdirected. For a single-clock design of 352 flops that allowance is
+conservative, but it is Tiny Tapeout's configuration and it is not worth
+touching for 0.15 ns on a path that already has 2.06 ns of slack.
+
+### Every max-fanout violation is in the clock tree
+
+The build reports 18 max-fanout violations, and all 18 are `clkbuf_leaf_*`
+cells driving 11 to 14 flip-flops against a limit of 10. **Not one data net
+violates fanout.** The limit is a design-repair default that clock tree
+synthesis does not apply to its own tree, because it is clustering sinks
+geometrically to minimise skew rather than to satisfy a fanout rule. The thing
+that actually matters about those nets is their skew, which is checked
+separately and reported above.
+
 ### The max-slew violations, and why they are left alone
 
 The build reports 286 max-slew violations at `max_ss_100C_1v60`, 198 at
@@ -369,9 +403,13 @@ the same tile means longer average wires.
 
 Why they are acceptable:
 
-- The 0.75 ns limit is LibreLane's conservative default. The sky130 standard
-  cells are characterised up to 1.5 ns, so the violating nets are still inside
-  the characterised tables and the timing numbers are not extrapolated.
+- The 0.75 ns limit is LibreLane's conservative default, and the violations
+  are small. The worst transition in the whole design is **1.082 ns**, on a
+  net the flow buffered with a weak `clkdlybuf4s25_1` cell to fix a fanout
+  violation. The sky130 standard cells are characterised up to 1.5 ns, so
+  1.082 ns is comfortably inside the characterised tables and every delay
+  quoted for those nets is interpolated rather than extrapolated. That is
+  checked against the report rather than assumed.
 - Timing closes with +2.06 ns of setup slack in that same corner, and the chip
   is declared at 10 MHz, a 100 ns period against the 20 ns it is signed off
   at.
