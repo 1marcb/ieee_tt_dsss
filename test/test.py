@@ -1783,8 +1783,117 @@ async def test_jammer_kinds(dut):
         for value in (0xA5, 0x5A, 0x3C, 0xC3):
             await send_byte(dut, uio, value)
             bad += bin(int(dut.uo_out.value) ^ value).count("1")
-        dut._log.info("follower jammer, delay %d chips: %d bit errors in 32",
-                      delay + 1, bad)
+        dut._log.info("follower jammer, replay delay %d chips: %d bit "
+                      "errors in 32", delay + 1, bad)
         assert bad == 0, (
             "the matched attack must gain nothing, got "
             f"{bad} bit errors at a replay delay of {delay + 1} chips")
+
+
+# ---------------------------------------------------------------------------
+# 30. A frame arriving on the same clock as a pop
+# ---------------------------------------------------------------------------
+
+@cocotb.test()
+async def test_rx_buffer_push_pop_same_clock(dut):
+    """A byte arriving on the very clock the host pops must not corrupt the
+    queue.
+
+    This is the one ordering the two-deep buffer has to get right and the one
+    a casual test never reaches. A push needs the count below two and a pop
+    needs it above zero, so the two can only coincide at a count of exactly
+    one, and at a count of one only the head holds a valid byte. Sliding the
+    tail down in that case would put stale data at the head and leave the
+    arriving byte in a slot the count says is empty, which shows up as a
+    duplicate byte in the delivered stream rather than as a lost one.
+
+    Finding the coincidence is deterministic rather than lucky. The receiver
+    is fed a fixed stream, so the clock on which the first byte is delivered
+    is fixed too, and every later frame lands one frame period after it. The
+    test measures that cycle, then re-runs and places the pop edge so it
+    arrives at the next frame boundary, sweeping the few cycles of
+    synchroniser delay to be sure of landing on it.
+    """
+    code_id = 17
+    payload = [0xC3, 0x96, 0x5A, 0x69, 0x3C, 0xA5, 0x4B, 0xB4]
+    chips = []
+    for v in payload:
+        chips.extend(spread_frame(v, code_id, framed=True))
+    frame_chips = 16 * L          # 8 sync bits plus 8 payload bits
+
+    start_clock(dut)
+
+    # Pass one: no pops at all, just to learn when the first byte lands.
+    uio = await reset(dut, tx_code=code_id, acq=True, framed=True,
+                      rx_pop=True)
+    uio.set(loopback=0, jam_en=0, disp_sel=0)
+    await ClockCycles(dut.clk, 3)
+
+    seen_at = []
+
+    def watch_first(i, byte_val, seen_at=seen_at):
+        if not seen_at and byte_val in payload:
+            seen_at.append(i)
+
+    await drive_chips(dut, uio, chips, epoch=False, watch=watch_first)
+    assert seen_at, "no byte was delivered, so the test cannot position a pop"
+    first_cycle = seen_at[0]
+    dut._log.info("first byte delivered at stream cycle %d, frame period %d",
+                  first_cycle, frame_chips)
+
+    # Pass two: aim a pop edge at the next frame boundary. The pin passes
+    # through two synchroniser flops and an edge detector, so sweep the lead
+    # to be certain one of the runs lands exactly on frame_done.
+    worst = None
+    for lead in range(1, 7):
+        target = first_cycle + frame_chips - lead
+        uio = await reset(dut, tx_code=code_id, acq=True, framed=True,
+                          rx_pop=True)
+        uio.set(loopback=0, jam_en=0, disp_sel=0)
+        await ClockCycles(dut.clk, 3)
+
+
+        seq = []
+
+        def watch_pop(i, byte_val, seq=seq, target=target):
+            # Hold the pop pin high for two cycles from the target, which
+            # produces exactly one rising edge at the intended clock.
+            uio.set(tx_start=1 if target <= i < target + 2 else 0)
+            # Record EVERY transition. An earlier version of this test
+            # filtered to payload values only, which hid the very defect it
+            # was written to find, because a corrupted head reads as the
+            # reset value.
+            if not seq or seq[-1] != byte_val:
+                seq.append(byte_val)
+
+        await drive_chips(dut, uio, chips, epoch=False, watch=watch_pop)
+        uio.set(tx_start=0)
+
+        # The invariant: once a real byte has reached the head, the head must
+        # never afterwards show a value that was never transmitted. A stale
+        # slot promoted to the head violates that, and it shows up as the
+        # reset value reappearing.
+        delivered = [v for v in seq if v in payload]
+        bad = None
+        if delivered:
+            for v in seq[seq.index(delivered[0]):]:
+                if v not in payload:
+                    bad = v
+                    break
+        order = [payload.index(v) for v in delivered]
+        ordered = all(b > a for a, b in zip(order, order[1:]))
+
+        dut._log.info("lead %d: head sequence %s%s", lead,
+                      [hex(v) for v in seq],
+                      "" if (bad is None and ordered) else "   CORRUPT")
+        if worst is None and (bad is not None or not ordered):
+            worst = (lead, [hex(v) for v in seq], bad)
+
+    assert worst is None, (
+        "a byte arriving on the same clock as a pop corrupted the queue: at a "
+        f"pop lead of {worst[0]} cycles the head sequence was {worst[1]}"
+        + (f", which promoted the never-transmitted value {worst[2]:#04x} to "
+           "the head" if worst[2] is not None
+           else ", which reorders the payload"))
+    dut._log.info("push and pop on the same clock preserved the queue at "
+                  "every lead tested")

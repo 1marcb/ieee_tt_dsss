@@ -301,6 +301,15 @@ while `DISP_SEL` is high. Pages 0 to 3 are unchanged from the earlier build.
 - `TRK_CNT` counts chip-phase corrections, saturating at 7. If it is moving,
   the two ends of the link are drifting apart and tracking is holding them
   together.
+- `FIFO_CNT` is how many bytes are queued, 0 to 2. Check it before reading the
+  data port if you care about the difference between a fresh byte and a
+  repeat. When the buffer empties, the data port keeps showing the last byte
+  popped rather than going blank, so a host that polls without checking the
+  count sees the last value held rather than a zero.
+- `FIFO_OVF` latches if a frame ever arrived with no room. It means bytes were
+  dropped, so the host is not keeping up. Note that a frame arriving on the
+  same clock as a pop from a full buffer is dropped and flagged too, even
+  though space was freed that instant.
 - `FEC_FIX` has one bit per codeword (high, low) that needed a correction in
   the last byte. `FEC_ERR` means a codeword had two errors and could not be
   corrected.

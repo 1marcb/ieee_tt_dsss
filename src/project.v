@@ -735,6 +735,7 @@ module tt_um_1marcb_jamguard (
       default: duty_top = 4'd8;   // 1/2
     endcase
   end
+
   wire pulse_on = tone_cnt[3:0] < duty_top;
 
   // The periodic kind is on for 2 * jam_thresh of every 64 chips, so its
@@ -760,6 +761,7 @@ module tt_um_1marcb_jamguard (
       default: band_top = 3'd6;     // channels  1..47   (47 of 63)
     endcase
   end
+
   wire in_band = tx_channel[5:3] < band_top;
 
   wire bsc_hit = noise[4:0] < jam_thresh;
@@ -1190,9 +1192,26 @@ module tt_um_1marcb_jamguard (
       fifo_cnt <= 2'd0;
       fifo_ovf <= 1'b0;
     end else begin
+      // A pop retires the head, and which byte replaces it depends on what
+      // else is true on that clock.  There are exactly three cases and
+      // getting any of them wrong puts a byte on the pins that was never
+      // transmitted, so they are spelled out rather than merged.
+      //
+      //   count 2, pop alone   the tail is real, so slide it down
+      //   count 1, pop + push  a push can ONLY coincide with a pop here,
+      //                        since a push needs the count below two and a
+      //                        pop needs it above zero.  There is no tail to
+      //                        slide, so the arriving byte becomes the head
+      //   count 1, pop alone   the buffer empties.  Hold the byte just
+      //                        popped rather than promoting fifo1, which is
+      //                        stale.  The count already says the buffer is
+      //                        empty, so this only decides what the data
+      //                        port reads, and holding the last byte is what
+      //                        a host that polls without checking the count
+      //                        expects
       if (fifo_pop) begin
-        fifo0 <= fifo1;                    // slide the tail down
-        if (fifo_push) fifo1 <= frame_byte;
+        if      (fifo_push)             fifo0 <= frame_byte;
+        else if (fifo_cnt == 2'd2)      fifo0 <= fifo1;
       end else if (fifo_push) begin
         if (fifo_cnt == 2'd0) fifo0 <= frame_byte;
         else                  fifo1 <= frame_byte;
@@ -1204,6 +1223,15 @@ module tt_um_1marcb_jamguard (
           // both or neither, the count does not move
         end
       endcase
+      // A frame that arrives with no room is dropped and flagged.  Note that
+      // fifo_push tests the count as it stands, so a frame arriving on the
+      // same clock as a pop from a full buffer is dropped even though space
+      // was being freed that instant.  That is deliberate.  Accepting it
+      // would mean making the push condition depend on the pop, which widens
+      // the logic and adds a fourth case to the block above, and the payoff
+      // is one byte in a rare coincidence.  Dropping it and setting the flag
+      // is honest: the host is told, and a host popping from a full buffer is
+      // already behind.
       if (frame_done & ~fifo_push) fifo_ovf <= 1'b1;
     end
   end

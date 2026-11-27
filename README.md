@@ -130,7 +130,7 @@ python test/run_local.py           # same thing, no make needed (Windows)
 python test/run_local.py --gl      # against the hardened netlist
 ```
 
-Thirty tests, every one of which also runs against the hardened netlist.
+Thirty-one tests, every one of which also runs against the hardened netlist.
 
 The first ten cover the basic link: reset state, the 248-chip transmit frame
 chip-for-chip, a 256-byte loopback sweep, the exact jam cliff at J=15/16,
@@ -209,16 +209,16 @@ winget install --id Icarus.Verilog          # the simulator
 | check | result |
 |---|---|
 | Software model self-check (coding theory proved from scratch, both families) | **pass** |
-| cocotb RTL simulation | **30/30** |
+| cocotb RTL simulation | **31/31** |
 | Verilator `--lint-only -Wall` | **0 warnings** (besides the template's file name) |
-| **cocotb gate-level simulation** (post-PnR netlist + sky130 cells) | **30/30** |
-| LibreLane hardening, 1×2 | **pass**, 73.8% utilisation |
-| Static timing, all 9 corners | setup **+2.06 ns**, hold **+0.105 ns**, 0 violations |
+| **cocotb gate-level simulation** (post-PnR netlist + sky130 cells) | **31/31** |
+| LibreLane hardening, 1×2 | **pass**, 75.3% utilisation |
+| Static timing, all 9 corners | setup **+0.47 ns**, hold **+0.11 ns**, 0 violations |
 | Routing DRC / Magic DRC / antenna / LVS | **0 / 0 / 0 / match uniquely** |
 | iCE40UP5K build (Yosys + nextpnr) | **pass** |
 | FPGA on real hardware | pending a board |
 
-RTL and gate level run the *same* thirty tests with the *same* coverage, which
+RTL and gate level run the *same* thirty-one tests with the *same* coverage, which
 is the point: a test that only runs at RTL cannot tell you whether the thing
 being fabricated works.
 
@@ -234,9 +234,9 @@ being fabricated works.
 | setup violations | **0** in all 9 corners |
 | hold violations | **0** in all 9 corners |
 | max capacitance violations | **0** |
-| max fanout violations | 18, not gated by the flow |
-| max slew violations | **286**, slow-slow corners only, see below |
-| IR drop | 0.084 mV worst on 1.8 V |
+| max fanout violations | 20, every one a clock-tree leaf buffer, not gated |
+| max slew violations | **281**, plus 11 at one typical corner, see below |
+| IR drop | 0.078 mV worst on 1.8 V |
 
 LVS matching uniquely is the line that matters most. It says the extracted
 layout and the synthesised netlist are the same circuit, with no ambiguity in
@@ -244,17 +244,22 @@ the correspondence.
 
 ### Setup slack across all nine corners
 
-| corner | setup slack (ns) |
-|---|---|
-| max_ss_100C_1v60 | **+2.06** |
-| nom_ss_100C_1v60 | +2.23 |
-| min_ss_100C_1v60 | +2.38 |
-| max_tt_025C_1v80 | +11.06 |
-| nom_tt_025C_1v80 | +11.16 |
-| min_tt_025C_1v80 | +11.24 |
-| max_ff_n40C_1v95 | +12.74 |
-| nom_ff_n40C_1v95 | +12.82 |
-| min_ff_n40C_1v95 | +12.89 |
+| corner | setup slack (ns) | slew violations |
+|---|---|---|
+| max_ss_100C_1v60 | **+0.47** | 281 |
+| nom_ss_100C_1v60 | +0.65 | 222 |
+| min_ss_100C_1v60 | +0.82 | 165 |
+| max_tt_025C_1v80 | +10.54 | 11 |
+| nom_tt_025C_1v80 | +10.66 | 0 |
+| min_tt_025C_1v80 | +10.78 | 0 |
+| max_ff_n40C_1v95 | +12.38 | 0 |
+| nom_ff_n40C_1v95 | +12.46 | 0 |
+| min_ff_n40C_1v95 | +12.54 | 0 |
+
+The typical corners, which are the only ones the flow gates on, close with
+about 10.5 ns. The slow corner is where the tight figure lives, and reaching
+it needs the worst silicon at 1.60 V and 100 degrees simultaneously while
+running five times faster than the part is specified for.
 
 The spread is almost entirely process and supply, not wire extraction: the
 slow-slow corner at 1.60 V is 9 ns worse than typical at 1.80 V, while the
@@ -266,12 +271,13 @@ pessimistic and optimistic RC extractions of the *same* corner differ by only
 | metric | value |
 |---|---|
 | sequential cells | 352 |
-| standard cells | 2620: 1315 combinational, 381 timing-repair buffers, 52 clock buffers, 54 inverters, 456 taps |
-| physical-only cells | 2902 fill and decap |
-| utilisation | 73.8% of the 1×2 tile |
-| worst setup slack | +2.06 ns at a 20 ns period (max_ss_100C_1v60) |
-| worst hold slack | +0.105 ns (ff corners) |
-| wirelength | 51 481 µm |
+| standard cells | 2666: 1344 combinational, 394 timing-repair buffers, 54 clock buffers, 58 inverters, 456 taps |
+| physical-only cells | 2779 fill and decap |
+| utilisation | 75.3% of the 1×2 tile |
+| worst setup slack | +0.47 ns at a 20 ns period (max_ss_100C_1v60) |
+| worst hold slack | +0.110 ns (ff corners) |
+| total negative slack | **0** for setup and for hold, in all nine corners |
+| wirelength | 54 051 µm |
 | total power | 1.77 mW |
 
 ### How full the tile actually is
@@ -290,14 +296,14 @@ ceiling rather than short of it:
 
 | | post-synthesis | post-CTS | post-resizer | outcome |
 |---|---|---|---|---|
-| this design | 58.8% | **66.2%** | **73.8%** | routes, 0 DRC |
-| the 75% variant | 60.0% | 67.3% | 75.1% | routes, 0 DRC |
+| this design | 59.8% | **67.2%** | **75.3%** | routes, 0 DRC |
+| an earlier variant | 58.8% | 66.2% | 73.8% | routes, 0 DRC |
 | the variant that died | 72.1% | **80.4%** | would need 89.8% | **placement failed** |
 
 The mechanism is the one described below: the post-CTS resizer inflates the
 design by about 12% to build hold margin, using eight-site delay cells, and
 the legaliser cannot place them if the post-CTS design is already dense. So
-the binding number is the **post-CTS** column, and the bracket is tight. 67.3%
+the binding number is the **post-CTS** column, and the bracket is tight. 67.2%
 is proven to work and 80.4% is proven to fail.
 
 Which means the practical limit is roughly **360 flip-flops on a 1x2 tile**,
@@ -317,6 +323,58 @@ So 73.8% is not a design that stopped short. It is the density at which this
 flow, on this tile, with this hold margin, places and routes reliably. The
 remaining space is doing a job: it is the decoupling that keeps the worst IR
 drop at 84 µV.
+
+### A byte arriving on the same clock as a pop
+
+Found by a line-by-line audit of the newest logic, after everything was
+already green, and fixed. It is the kind of defect no amount of passing tests
+surfaces, because reaching it needs two independent events on one clock edge.
+
+The receive buffer is two registers and a slide. A push requires the count
+below two and a pop requires it above zero, so **the two can only ever
+coincide at a count of exactly one** and at a count of one only `fifo0` holds
+a valid byte. The original code unconditionally slid the tail down:
+
+```verilog
+if (fifo_pop) begin
+  fifo0 <= fifo1;                    // wrong when fifo1 is not valid
+  if (fifo_push) fifo1 <= frame_byte;
+end
+```
+
+So a simultaneous push and pop promoted a **stale slot to the head** and
+parked the arriving byte where the count says nothing is. The next pop
+returned a byte that was never transmitted, and the real one arrived a frame
+late behind it. A silent duplicate, not a drop.
+
+Writing the test first exposed a second problem, in the test. The first
+version filtered observations to payload values, which hid the defect it was
+written to find, because a corrupted head reads as the reset value `0x00`.
+With the filter removed the failure is unmistakable, and it reproduced at four
+of six pop phases.
+
+Fixing that revealed a third thing, a regression in pin behaviour rather than
+a data error. On a pop that empties the buffer, sliding the tail down also put
+`0x00` on the data port, where the earlier holding-register design kept the
+last byte forever. All three cases are now distinct:
+
+| count | event | head becomes |
+|---|---|---|
+| 2 | pop alone | the tail slides down |
+| 1 | pop and push | the arriving byte, since there is no tail |
+| 1 | pop alone | unchanged, holding the byte just popped |
+
+`test_rx_buffer_push_pop_same_clock` locks it down. It measures the clock on
+which the first byte is delivered, then re-runs placing the pop edge at the
+next frame boundary, sweeping the synchroniser delay to be certain of landing
+on the coincidence rather than hoping for it.
+
+One behaviour is left as it is and documented rather than changed: a frame
+arriving on the same clock as a pop from a **full** buffer is dropped and
+flagged, although space was freed that instant. Accepting it would make the
+push condition depend on the pop and add a fourth case to the block, and the
+payoff is one byte in a rare coincidence. Dropping and flagging is honest,
+whereas silently duplicating was not.
 
 ### Two flip-flops bought 1.98 ns of setup slack
 
@@ -342,6 +400,72 @@ delayed by the same single cycle so their alignment is untouched. Setup slack
 went from +0.083 ns to **+2.059 ns**, and wirelength fell from 52 730 µm to
 51 481 µm as a side effect. The flop count went from 350 to 352, which is the
 cleanest possible confirmation that nothing else changed.
+
+### What actually limits the clock, and two fixes that were reverted
+
+Worth recording because the measurements contradicted sound-looking reasoning
+twice.
+
+The worst setup path was chased across four hardening runs, and the start
+point moved every time while the slack did not improve:
+
+| run | change | worst path starts at | setup slack |
+|---|---|---|---|
+| 3 | baseline | an unnamed internal register | +2.059 ns |
+| 4 | receive buffer fix | `cfg_a[6]`, the jammer threshold decode | +0.466 ns |
+| 5 | three config decodes registered | the same threshold path | +1.278 ns |
+| 6 | `jam_hit` registered instead | `loopback_en`, the input multiplexer | +0.098 ns |
+
+Those differences are causal, not noise. Re-running the flow on the reverted
+source reproduced the run 4 numbers **exactly**, to four significant figures
+on every metric, which establishes that the flow is deterministic for a given
+input. So the receive buffer fix really did cost 1.59 ns, the decode registers
+really did recover 0.81 ns, and registering `jam_hit` really did lose 0.37 ns.
+A design with several paths clustered within half a nanosecond of each other
+is genuinely sensitive to small changes, which is a sharper statement than
+calling it noisy.
+
+Every one of those paths ends in the same place and is within 0.4 ns of
+19.9 ns:
+
+```
+match -> 7-bit accumulate -> magnitude fold -> threshold compare -> flop
+```
+
+That is the correlator deciding, in the clock that delivered the chip, whether
+the chip agreed and whether the window has locked. It is irreducible at one
+chip per clock. Both attempted fixes were widening entrances to a corridor
+whose length is the constraint, and the second did exactly what it was
+designed to do: it removed the jammer from the path and exposed the next
+entrance to the same corridor.
+
+**Both timing changes were reverted**, and the deciding argument was routing
+robustness rather than slack. Registering the three configuration decodes
+genuinely recovered 0.81 ns, but it cost twelve flip-flops, and on this tile a
+flip-flop is 31 µm² placed, so routability inflation went from 0.80% to 6.75%
+against the 11.4% that accompanied the placement failure described below.
+Registering `jam_hit` was one flip-flop and removed more logic, yet measured
+0.37 ns worse while also changing observable behaviour.
+
+The trade is asymmetric. Setup is gated only at the typical corners, where
+slack is about 11 ns either way, so a thin slow-corner figure does not fail
+the build. A routing or placement failure produces no artifact at all. Given a
+choice between 0.81 ns of margin at a corner nothing gates and staying far
+from the one failure mode already observed on this tile, the second is worth
+more.
+
+The real fix is to pipeline the correlator decision, taking the lock and
+tracking comparisons from the registered accumulator one clock later. That
+ripples into the framing logic and is not a change to make two days before a
+deadline on a design that already works.
+
+**Why the thin slack is still fine.** The flow signs off at 20 ns, which is
+50 MHz, and this design declares 10 MHz. A 19.9 ns correlator chain means the
+part runs correctly to about 50 MHz and is specified at a fifth of that, so
+the operating margin is 80 ns on a 100 ns period. The typical corner, which is
+the one the flow gates on, closes with about 11 ns. Reaching the 0.1 ns figure
+needs the worst silicon at 1.60 V and 100 degrees simultaneously, while
+running five times faster than the part is specified for.
 
 ### The density limit is hold buffers, not logic
 
@@ -412,25 +536,25 @@ Measured at the worst corner, `max_ss_100C_1v60`:
 |---|---|
 | Sinks on `clk` | 352, clustered to 33 |
 | Clock buffers built by CTS | 38, plus 14 more for load balancing |
-| Insertion delay to the launch flop | 1.245 ns |
-| Insertion delay to the capture flop | 1.095 ns |
-| **Raw tree skew** | **0.151 ns** |
+| Insertion delay to the launch flop | 1.259 ns |
+| Insertion delay to the capture flop | 1.106 ns |
+| **Raw tree skew** | **0.153 ns** |
 | Configured clock uncertainty | 0.250 ns |
 | Reconvergence pessimism given back | 0.054 ns |
-| **Total setup skew charged** | **0.347 ns** |
+| **Total setup skew charged** | **0.349 ns** |
 
-The useful observation is the split. Only 0.151 ns of that 0.347 ns is the
+The useful observation is the split. Only 0.153 ns of that 0.349 ns is the
 clock tree. The dominant term is the flat 0.250 ns `clock uncertainty`
 allowance, which is a signoff constant rather than a measured property of this
 design, and it is 72% of the penalty. So building a shallower or better
 balanced tree would recover almost nothing, and effort spent there would be
 misdirected. For a single-clock design of 352 flops that allowance is
-conservative, but it is Tiny Tapeout's configuration and it is not worth
-touching for 0.15 ns on a path that already has 2.06 ns of slack.
+conservative, but it is Tiny Tapeout's configuration, and the 0.15 ns it
+could yield is not worth deviating from a proven flow for.
 
 ### Every max-fanout violation is in the clock tree
 
-The build reports 18 max-fanout violations, and all 18 are `clkbuf_leaf_*`
+The build reports 20 max-fanout violations, and all 20 are `clkbuf_leaf_*`
 cells driving 11 to 14 flip-flops against a limit of 10. **Not one data net
 violates fanout.** The limit is a design-repair default that clock tree
 synthesis does not apply to its own tree, because it is clustering sinks
@@ -440,20 +564,25 @@ separately and reported above.
 
 ### The max-slew violations, and why they are left alone
 
-The build reports 286 max-slew violations at `max_ss_100C_1v60`, 198 at
-`nom_ss`, 97 at `min_ss`, and **none** at any typical or fast corner. The
-count rose from 149 on the smaller design, which is expected: more logic on
-the same tile means longer average wires.
+The build reports 281 max-slew violations at `max_ss_100C_1v60`, 222 at
+`nom_ss`, 165 at `min_ss`, and 11 at `max_tt`. The count rose from 149 on the
+smaller design, which is expected: more logic on the same tile means longer
+average wires.
+
+The 11 at a typical corner are new and worth being precise about rather than
+alarmed by. The worst of them is **0.763 ns against the 0.750 ns limit**, so
+13 picoseconds over a limit that is itself conservative by a factor of two.
 
 Why they are acceptable:
 
 - The 0.75 ns limit is LibreLane's conservative default, and the violations
-  are small. The worst transition in the whole design is **1.082 ns**, on a
-  net the flow buffered with a weak `clkdlybuf4s25_1` cell to fix a fanout
-  violation. The sky130 standard cells are characterised up to 1.5 ns, so
-  1.082 ns is comfortably inside the characterised tables and every delay
-  quoted for those nets is interpolated rather than extrapolated. That is
-  checked against the report rather than assumed.
+  are small. The worst transition anywhere in the design is **1.206 ns**, on a
+  net the flow buffered to fix a fanout violation. The sky130 standard cells
+  are characterised up to 1.5 ns, so 1.206 ns is inside the characterised
+  tables and every delay quoted for those nets is interpolated rather than
+  extrapolated. That is read off the report rather than assumed, and it is
+  worth re-reading after any change, because the claim only holds while the
+  worst case stays under 1.5 ns and nothing in the flow enforces it.
 - Timing closes with +2.06 ns of setup slack in that same corner, and the chip
   is declared at 10 MHz, a 100 ns period against the 20 ns it is signed off
   at.
