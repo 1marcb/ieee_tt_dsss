@@ -274,6 +274,50 @@ pessimistic and optimistic RC extractions of the *same* corner differ by only
 | wirelength | 51 481 µm |
 | total power | 1.77 mW |
 
+### How full the tile actually is
+
+Two different questions get called utilisation, and they have different
+answers.
+
+**Physically, the tile is 100% occupied, and always was.** The fill insertion
+stage places 2740 fill and decoupling cells into every gap, so the final core
+area used is 34 255 µm² of a 34 255 µm² core, exactly. That number carries no
+information about a design.
+
+**The useful figure is the logic share, and it went from 38.5% to 73.8%.**
+That is where the tile now stands, and three runs establish that it is at the
+ceiling rather than short of it:
+
+| | post-synthesis | post-CTS | post-resizer | outcome |
+|---|---|---|---|---|
+| this design | 58.8% | **66.2%** | **73.8%** | routes, 0 DRC |
+| the 75% variant | 60.0% | 67.3% | 75.1% | routes, 0 DRC |
+| the variant that died | 72.1% | **80.4%** | would need 89.8% | **placement failed** |
+
+The mechanism is the one described below: the post-CTS resizer inflates the
+design by about 12% to build hold margin, using eight-site delay cells, and
+the legaliser cannot place them if the post-CTS design is already dense. So
+the binding number is the **post-CTS** column, and the bracket is tight. 67.3%
+is proven to work and 80.4% is proven to fail.
+
+Which means the practical limit is roughly **360 flip-flops on a 1x2 tile**,
+and this design uses 352. There is about 600 µm² of headroom, which is some
+50 cells or 20 flip-flops. Not nothing, but not a feature either.
+
+Going meaningfully further needs one of two things, and both were considered
+and declined:
+
+- **Cut the hold margin.** Frees about 1200 µm². Declined, because a hold
+  violation is the only timing failure with no field workaround, for the
+  reason given below.
+- **Add logic anyway and hope.** Declined, because the failure mode is already
+  observed, costs twenty minutes per attempt, and the deadline is 2026-11-29.
+
+So 73.8% is not a design that stopped short. It is the density at which this
+flow, on this tile, with this hold margin, places and routes reliably. The
+remaining space is doing a job: it is the decoupling that keeps the worst IR
+drop at 84 µV.
+
 ### Two flip-flops bought 1.98 ns of setup slack
 
 The first successful 1×2 hardening of the expanded design closed with only
