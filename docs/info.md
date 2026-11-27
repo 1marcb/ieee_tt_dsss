@@ -278,7 +278,24 @@ while `DISP_SEL` is high. Pages 0 to 3 are unchanged from the earlier build.
 | 8 | bit errors, high byte | | | | | |
 | 9 | bytes delivered, low byte | | | | | |
 | 10 | bytes delivered, high byte | | | | | |
-| 11 to 15 | FIFO_OVF | FIFO_CNT[1:0] | | TRK_CNT[2:0] | | LEN127, PRBS_EN |
+| 11 to 15 | the buffer and tracking page, bit assignments below | | | | | |
+
+Pages 4 to 10 are single values occupying the whole byte, except for the flag
+in bit 7 where one is listed. Pages 11 to 15 all read the same byte, and its
+fields do not line up with the column widths above, so they are given
+explicitly:
+
+| bits | field | meaning |
+|---|---|---|
+| 7 | `FIFO_OVF` | a frame arrived with no room, latching |
+| 6 to 5 | `FIFO_CNT` | bytes queued, 0 to 2 |
+| 4 to 2 | `TRK_CNT` | chip-phase corrections, saturating at 7 |
+| 1 | `LEN127` | the configured code length, read back |
+| 0 | `PRBS_EN` | the configured pattern generator, read back |
+
+The last two are a configuration echo, which is there so that during bring-up
+you can confirm the switches were actually latched rather than infer it from
+behaviour.
 
 - `CORR` is the match count `M` of the last window. `M = L` or `M = 0` is a
   perfect correlation, and `M = L/2` is no correlation at all. Page 0 shows

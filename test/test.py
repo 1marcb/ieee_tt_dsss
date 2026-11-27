@@ -1364,7 +1364,8 @@ async def test_long_code_loopback(dut):
                 f"clean {fam.name} round trip returned "
                 f"{int(dut.uo_out.value):#04x}, expected {value:#04x}")
         st = await read_status(dut, uio)
-        assert status_fields(st)["locked"] == 1,             f"{fam.name} must hold lock on a clean channel"
+        assert status_fields(st)["locked"] == 1, (
+            f"{fam.name} must hold lock on a clean channel")
 
     # Jammed channel, same jammer, both lengths.
     errors = {}

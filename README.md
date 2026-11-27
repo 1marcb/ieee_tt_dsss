@@ -47,7 +47,7 @@ window is lengthened or shortened by one chip, which pulls the phase back
 inside a single code period.
 
 That matters asymmetrically. The serial search can only ever *retard* the
-local phase, so a slip in the advancing direction takes up to L−1 further
+local phase, so a slip in the advancing direction takes up to L-1 further
 slips to walk the long way round. Measured on the hardware with one chip
 dropped every four frames, delivery goes from 5 of 16 bytes to 11 of 16 once
 tracking is on.
@@ -80,6 +80,7 @@ test/test.py               cocotb suite, runs on RTL and on the netlist
 test/tb.v, test/Makefile   the template harness CI uses
 test/run_local.py          run the suite without GNU make (Windows)
 tools/harden_local.py      run the LibreLane hardening locally, in Docker
+tools/check_submission.py  pre-submission checklist, run it before submitting
 tools/synth_stat.ys        quick Yosys cell/flip-flop estimate
 tools/fpga_local.py        iCE40UP5K build via Yosys + nextpnr (WASM, no install)
 ```
@@ -181,6 +182,24 @@ synchronised. Adding synchronisers to `ui_in` would cost 16 flip-flops and
 would not remove the underlying race, which is inherent to sampling a
 mechanical switch. On a tile where a flip-flop really costs 31 µm² placed,
 that is 500 µm² spent on something that does not fix the problem.
+
+## Before submitting
+
+```bash
+python tools/check_submission.py
+```
+
+Thirty-six checks over the things that are cheap to get wrong and expensive to
+discover late: the metadata the shuttle reads, the places two files have to
+agree with each other, and the signoff numbers from the most recent local
+hardening run. Most of them are invisible to the test suite because they are
+not about behaviour. A pinout string that disagrees with the register transfer
+level misleads whoever uses the chip and no simulation will ever notice it, and
+a top module name that does not match `info.yaml` fails the shuttle rather than
+the tests.
+
+Run `tools/harden_local.py` first, or the physical checks have no metrics to
+read and will say so.
 
 ## Local hardening
 
